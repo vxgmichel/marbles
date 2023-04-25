@@ -59,8 +59,8 @@ OPPOSITES = {
 PREFERRED_DIRECTIONS = [
     Direction.EAST,
     Direction.SOUTH,
-    Direction.WEST,
     Direction.NORTH,
+    Direction.WEST,
 ]
 
 
@@ -159,41 +159,51 @@ Y_OFFSET = 0
 class InputOutput:
     input_bits: list[bool] = []
     output_bits: list[bool] = []
+    input_data: io.RawIOBase | None = None
 
     @classmethod
     def write(cls, value: bool) -> None:
         cls.output_bits.append(value)
         if len(cls.output_bits) != 8:
             return
-        value = 0
+        byte: int = 0
         for x in reversed(cls.output_bits):
-            value <<= 1
-            value += x
-        sys.stderr.buffer.write(bytes([value]))
+            byte <<= 1
+            byte += int(x)
+        sys.stderr.buffer.write(bytes([byte]))
         sys.stderr.buffer.flush()
         cls.output_bits = []
 
     @classmethod
     def read(cls) -> bool | None:
         if not cls.input_bits:
-            if sys.stdin.isatty():
-                return None
             char = cls.get_char()
             if char is None:
                 return None
             cls.input_bits = list(map(bool, map(int, format(ord(char), "08b"))))
         return cls.input_bits.pop()
 
-    @staticmethod
-    def get_char() -> bytes | None:
-        fd = sys.stdin.fileno()
-        read, _, _ = select.select([fd], [], [], 0)
-        if fd not in read:
+    @classmethod
+    def get_char(cls) -> bytes | None:
+        if cls.input_data is not None:
+            byte = cls.input_data.read(1)
+            if not byte:
+                return None
+            return byte
+        if sys.stdin.isatty():
             return None
-        char = sys.stdin.buffer.read(1)
-        if not char:
-            exit()
-        return char
+        return get_char_from_stdin()
+
+
+def get_char_from_stdin() -> bytes | None:
+    fd = sys.stdin.fileno()
+    read, _, _ = select.select([fd], [], [], 0)
+    if fd not in read:
+        return None
+    char = sys.stdin.buffer.read(1)
+    if not char:
+        exit()
+    return char
 
 
 # Grid helpers
@@ -266,6 +276,7 @@ def get_action(
     # Control block
     if character in CONTROL:
         d = CONTROL.get(character)
+        assert d is not None
         neighbor = marble.p.then(d)
         neighbor_char = get_character(grid, neighbor)
         lower = neighbor in lower_marbles
@@ -295,6 +306,7 @@ def get_action(
     # Conditional-clear block
     if character in CONDITIONAL_CLEAR:
         d = CONDITIONAL_CLEAR.get(character)
+        assert d is not None
         neighbor = marble.p.then(d)
         neighbor_char = get_character(grid, neighbor)
         lower = neighbor in lower_marbles
@@ -328,7 +340,7 @@ def get_action(
 
 
 def tick(
-    grid: dict[int, dict[int, str]], marbles: set[Marble]
+    grid: dict[int, dict[int, str]], marbles: set[Marble], waiting: dict[Position, Marble],
 ) -> tuple[set[Marble], set[Position]]:
     # Prepare structures
     changes = set()
@@ -365,22 +377,35 @@ def tick(
         if action == Action.STEP:
             new_z = marble.z
             new_p = marble.p.then(new_d)
+            new_marbles |= {Marble(new_p, new_z, new_d)}
         elif action == Action.DISPLAY:
             changes |= display(grid, marble)
             new_z = marble.z
             new_p = marble.p.then(new_d)
+            new_marbles |= {Marble(new_p, new_z, new_d)}
         elif action == Action.INVERT:
             new_z = Depth(not marble.z.value)
             new_p = marble.p.then(new_d)
+            new_marbles |= {Marble(new_p, new_z, new_d)}
         elif action == Action.WAIT:
             new_z = marble.z
             new_p = marble.p
+            waiting[new_p] = Marble(new_p, new_z, new_d)
         elif action == Action.CLEAR:
             new_z = Depth.LOWER
             new_p = marble.p.then(new_d)
+            new_marbles |= {Marble(new_p, new_z, new_d)}
+        else:
+            assert False
 
-        # Add new marble
-        new_marbles |= {Marble(new_p, new_z, new_d)}
+        # Wake up neighbors
+        for d in Direction:
+            marble = waiting.pop(new_p.then(d), None)
+            if marble is not None:
+                new_marbles |= {marble}
+                marble = waiting.pop(new_p, None)
+                if marble is not None:
+                    new_marbles |= {marble}
 
     return new_marbles, changes
 
@@ -435,9 +460,9 @@ def drawing_context():
     print("\033[?1049h", end="", flush=True)
     # Hide cursor
     print("\033[?25l", end="", flush=True)
+    fd = sys.stdin.fileno()
+    info = termios.tcgetattr(fd)
     try:
-        fd = sys.stdin.fileno()
-        info = termios.tcgetattr(fd)
         tty.setraw(fd)
         yield
     finally:
@@ -469,13 +494,16 @@ def debug_context():
 # Main routine
 
 
-def main(file: io.TextIOBase, speed: float = 10.0, fps: float = 60.0):
+def main(file: io.TextIOBase, speed: float = 10.0, fps: float = 60.0, input_data: io.RawIOBase | None = None):
+    InputOutput.input_data = input_data
+
     grid: dict[int, dict[int, str]] = {
         i: {j: char for j, char in enumerate(line) if char.strip()}
         for i, line in enumerate(file)
         if line.strip()
     }
 
+    waiting: dict[Position, Marble] = {}
     changes: set[Position] = set()
     marbles: set[Marble] = set()
     old_marbles: set[Marble] = set()
@@ -485,15 +513,25 @@ def main(file: io.TextIOBase, speed: float = 10.0, fps: float = 60.0):
             if char in MARBLES:
                 depth = Depth.UPPER if char == MARBLE_UPPER else Depth.LOWER
                 directions = guess_directions(grid, p)
-                if not directions:
+                if len(directions) == 0:
                     continue
-                opposites = {d.opposite for d in directions}
-                direction, *_ = sorted(opposites, key=PREFERRED_DIRECTIONS.index)
-                marbles |= {Marble(p, depth, direction)}
-                for key, value in TRACKS.items():
-                    if value == directions:
-                        grid[i][j] = key
-                        break
+                elif len(directions) == 1:
+                    assert False
+                elif len(directions) == 2:
+                    d1, d2 = sorted(directions, key=PREFERRED_DIRECTIONS.index)
+                    marbles |= {Marble(p, depth, d2.opposite)}
+                    for key, value in TRACKS.items():
+                        if value == directions:
+                            grid[i][j] = key
+                            break
+                elif len(directions) == 3:
+                    assert False
+                elif len(directions) == 4:
+                    direction = PREFERRED_DIRECTIONS[0]
+                    marbles |= {Marble(p, depth, direction)}
+                    grid[i][j] = "╬"
+
+
 
     with drawing_context():
         global TERM_SIZE, OFFSET_CHANGED, X_OFFSET, Y_OFFSET
@@ -506,7 +544,7 @@ def main(file: io.TextIOBase, speed: float = 10.0, fps: float = 60.0):
             # Control
             if sys.stdin.isatty():
                 while True:
-                    char = InputOutput.get_char()
+                    char = get_char_from_stdin()
                     if char == b"\x03":
                         raise KeyboardInterrupt
                     elif char == b"\x1b":
@@ -536,19 +574,20 @@ def main(file: io.TextIOBase, speed: float = 10.0, fps: float = 60.0):
             # Draw to the screen
             if time.time() > deadline_display:
                 deadline_display += 1 / fps
+                all_marbles = marbles | set(waiting.values())
                 if os.get_terminal_size() != TERM_SIZE or OFFSET_CHANGED:
                     OFFSET_CHANGED = False
                     TERM_SIZE = os.get_terminal_size()
                     print(draw_grid(grid), end="", flush=True)
                 else:
-                    changes |= {marble.p for marble in old_marbles - marbles}
+                    changes |= {marble.p for marble in old_marbles - all_marbles}
                     print(draw_changes(grid, changes), end="", flush=True)
-                print(draw_marbles(grid, marbles), end="", flush=True)
+                print(draw_marbles(grid, all_marbles), end="", flush=True)
                 old_marbles = marbles
                 changes = set()
 
             # Compute the next tick
-            marbles, new_changes = tick(grid, marbles)
+            marbles, new_changes = tick(grid, marbles, waiting)
             changes |= new_changes
 
             # Wait for the next tick
@@ -563,5 +602,6 @@ if __name__ == "__main__":
     parser.add_argument("file", type=argparse.FileType())
     parser.add_argument("--speed", type=float, default=10.0)
     parser.add_argument("--fps", type=float, default=60.0)
+    parser.add_argument("--input", type=argparse.FileType("rb"), default=None)
     namespace = parser.parse_args()
-    main(namespace.file, namespace.speed, namespace.fps)
+    main(namespace.file, namespace.speed, namespace.fps, namespace.input)

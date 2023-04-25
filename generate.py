@@ -183,6 +183,34 @@ def main(
         )
         print(row)
 
+    # Annotations
+    row = (
+        EMPTY
+        + VERTICAL.replace("  ", "J ") * j_size
+        + EMPTY
+        + VERTICAL.replace("  ", "F ") * t_size
+        + EMPTY * MEMORY_WIDTH
+        + EMPTY
+        + VERTICAL.replace("  ", "F ") * t_size
+        + EMPTY
+        + VERTICAL.replace("  ", "J ") * j_size
+    )
+    print(row)
+
+    row = (
+        EMPTY
+        + "".join(VERTICAL.replace("  ", f"{d}".ljust(2)) for d in reversed(range(j_size)))
+        + EMPTY
+        + "".join(VERTICAL.replace("  ", f"{d}".ljust(2)) for d in reversed(range(t_size)))
+        + EMPTY * MEMORY_WIDTH
+        + EMPTY
+        + "".join(VERTICAL.replace("  ", f"{d}".ljust(2)) for d in range(t_size))
+        + EMPTY
+        + "".join(VERTICAL.replace("  ", f"{d}".ljust(2)) for d in range(j_size))
+    )
+    print(row)
+
+
     # Display
     row = (
         EMPTY
@@ -373,6 +401,10 @@ def main(
             value = list(map(int, value))
         else:
             value = [0] * t_size * 2
+
+        # Invert very first bit
+        if block_number == 0:
+            value[0] = int(not value[0])
 
         # Block row 1: Decoder value in
         info = "┏" + "━" * ((MEMORY_WIDTH * 3) - 1) + "┓  "
