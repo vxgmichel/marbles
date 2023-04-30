@@ -1,4 +1,5 @@
 from __future__ import annotations
+import array
 import bisect
 import functools
 
@@ -186,100 +187,225 @@ class Event:
         self.index = index
         self.inverted = inverted
         self.neighbor = neighbor
+        self.callback: typing.Callable | None = None
 
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         if self.inverted:
             circuit.depth = circuit.depth.inverse
-        return False
+        return None
 
 
 class Start(Event):
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         super().process(simulation, circuit)
-        if circuit.last_start is None:
-            circuit.last_start = 0
-            return False
         cycle = simulation.tick - circuit.last_start
         circuit.last_start = simulation.tick
         simulation.register_cycle(circuit, cycle)
-        return False
+
+        if simulation.is_recording():
+            register_cycle = simulation.register_cycle
+            inverted = self.inverted
+            values = simulation.values
+            circuit_id = circuit.id
+
+            def callback():
+                values[circuit_id] ^= inverted
+                register_cycle(circuit, cycle)
+
+            self.callback = callback
+            self.callback.circuit = circuit
+
+        return None
 
 
 class ConditionalClear(Event):
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         super().process(simulation, circuit)
         assert self.neighbor is not None
         other_circuit = simulation.pop_waiting_circuit(self.neighbor)
         if other_circuit is None:
-            return True
+            circuit.waiting = True
+            circuit.waiting_inverted = self.inverted
+            return None
         if other_circuit.depth == Depth.LOWER and circuit.depth == Depth.UPPER:
             circuit.depth = Depth.LOWER
         other_circuit.waiting = False
         other_circuit.last_tick = simulation.tick
-        simulation.add_running_circuit(other_circuit)
-        return False
+
+        if simulation.is_recording():
+            inverted = self.inverted
+            values = simulation.values
+            circuit_id = circuit.id
+            other_circuit_id = other_circuit.id
+            other_circuit_inverted = other_circuit.waiting_inverted
+
+            def callback():
+                values[circuit_id] ^= inverted
+                values[other_circuit_id] ^= other_circuit_inverted
+                values[circuit_id] &= values[other_circuit_id]
+
+            self.callback = callback
+
+        return other_circuit
 
 
 class UnconditionalClear(Event):
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         circuit.depth = Depth.LOWER
-        return False
+
+        if simulation.is_recording():
+            values = simulation.values
+            circuit_id = circuit.id
+
+            def callback():
+                values[circuit_id] = 0
+
+            self.callback = callback
+            self.callback.circuit = circuit
+
+        return None
 
 
 class Control(Event):
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         super().process(simulation, circuit)
         assert self.neighbor is not None
         other_circuit = simulation.pop_waiting_circuit(self.neighbor)
         if other_circuit is None:
-            return True
+            circuit.waiting = True
+            circuit.waiting_inverted = self.inverted
+            assert self.callback is None
+            return None
         if other_circuit.depth == Depth.UPPER and circuit.depth == Depth.LOWER:
             other_circuit.depth = Depth.LOWER
         other_circuit.waiting = False
         other_circuit.last_tick = simulation.tick
-        simulation.add_running_circuit(other_circuit)
-        return False
+
+        if simulation.is_recording():
+            inverted = self.inverted
+            values = simulation.values
+            circuit_id = circuit.id
+            other_circuit_id = other_circuit.id
+            other_circuit_inverted = other_circuit.waiting_inverted
+
+            def callback():
+                values[circuit_id] ^= inverted
+                values[other_circuit_id] ^= other_circuit_inverted
+                values[other_circuit_id] &= values[circuit_id]
+
+            self.callback = callback
+
+        return other_circuit
 
 
 class Display(Event):
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         super().process(simulation, circuit)
         assert self.neighbor is not None
-        circuit.set_display_value(self.neighbor, circuit.depth)
-        return False
+        circuit.set_display_value(self.neighbor, bool(circuit.depth.value))
+
+        if simulation.is_recording():
+            inverted = self.inverted
+            values = simulation.values
+            circuit_id = circuit.id
+            set_display_value = circuit.set_display_value
+            neighbor = self.neighbor
+
+            def callback():
+                values[circuit_id] ^= inverted
+                set_display_value(neighbor, values[circuit_id])
+
+            self.callback = callback
+
+        return None
 
 
 class Exit(Event):
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         super().process(simulation, circuit)
         if circuit.depth == Depth.UPPER:
             exit()
-        return False
+
+        if simulation.is_recording():
+            inverted = self.inverted
+            values = simulation.values
+            circuit_id = circuit.id
+
+            def callback():
+                values[circuit_id] ^= inverted
+                if values[circuit_id]:
+                    exit()
+
+            self.callback = callback
+
+        return None
 
 
 class ReadBit(Event):
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         super().process(simulation, circuit)
         if circuit.depth == Depth.UPPER:
             if not simulation.read_bit():
                 circuit.depth = Depth.LOWER
-        return False
+
+        if simulation.is_recording():
+            inverted = self.inverted
+            values = simulation.values
+            circuit_id = circuit.id
+            read_bit = simulation.read_bit
+
+            def callback():
+                values[circuit_id] ^= inverted
+                if values[circuit_id]:
+                    values[circuit_id] = read_bit()
+
+            self.callback = callback
+
+        return None
 
 
 class WriteZero(Event):
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         super().process(simulation, circuit)
         if circuit.depth == Depth.UPPER:
             simulation.write_bit(0)
-        return False
+
+        if simulation.is_recording():
+            inverted = self.inverted
+            values = simulation.values
+            circuit_id = circuit.id
+            write_bit = simulation.write_bit
+
+            def callback():
+                values[circuit_id] ^= inverted
+                if values[circuit_id]:
+                    write_bit(0)
+
+            self.callback = callback
+
+        return None
 
 
 class WriteOne(Event):
-    def process(self, simulation: Simulation, circuit: Circuit) -> bool:
+    def process(self, simulation: Simulation, circuit: Circuit) -> Circuit | None:
         super().process(simulation, circuit)
         if circuit.depth == Depth.UPPER:
             simulation.write_bit(1)
-        return False
+
+        if simulation.is_recording():
+            inverted = self.inverted
+            values = simulation.values
+            circuit_id = circuit.id
+            write_bit = simulation.write_bit
+
+            def callback():
+                values[circuit_id] ^= inverted
+                if values[circuit_id]:
+                    write_bit(1)
+
+            self.callback = callback
+
+        return None
 
 
 @functools.total_ordering
@@ -314,12 +440,14 @@ class DisplayInfo:
 class Circuit:
     def __init__(
         self,
+        circuit_id: int,
         marble: Marble,
         positions: list[Position],
         events: list[Event],
         invertors: list[int],
         displays: dict[Position, DisplayInfo],
     ):
+        self.id = circuit_id
         self.init_marble = marble
         self.positions = positions
         self.events = events
@@ -335,10 +463,16 @@ class Circuit:
 
         # Mutable state
         self.waiting: bool = False
+        self.waiting_inverted: bool = False
         self.depth: Depth = marble.z
         self.last_index: int = 0
         self.last_tick: int = 0
-        self.last_start: int | None = None
+        self.last_start: int = 0
+
+        # Record
+        self.recorded_events: list[tuple[int, bool, bool, int]] = []
+        self.recorded = False
+        self.recorded_get_depth: typing.Callable | None = None
 
     def __lt__(self, other):
         if isinstance(other, Circuit):
@@ -347,22 +481,64 @@ class Circuit:
             return self.min_x.__lt__(other)
         raise NotImplementedError(other)
 
-    def set_display_value(self, position: Position, value: Depth) -> None:
-        self.displays[position].value = bool(value.value)
+    def init_recording(self, tick: int):
+        p_index = self.events[self.last_index].index
+        if not self.waiting:
+            p_index += tick - self.last_tick
+            p_index %= self.length
+        item = 0, self.waiting, self.waiting_inverted, p_index
+        self.recorded_events = [item]
+        self.init_position = self.positions[p_index]
 
-    def get_marble(self, tick: int) -> Marble:
-        if self.waiting:
-            position = self.last_position
-            depth = self.depth
+    def stop_recording(self, simulation: Simulation):
+        if self.waiting and self.waiting_inverted:
+            value = self.depth.inverse.value
+        else:
+            value = self.depth.value
+        simulation.values[self.id] = int(value)
+
+        def get_depth():
+            return Depth(simulation.values[self.id]) if simulation.go_fast else self.depth
+
+        self.recorded = True
+        self.recorded_get_depth = get_depth
+
+    def set_display_value(self, position: Position, value: int) -> None:
+        self.displays[position].value = bool(value)
+
+    def get_marble(self, tick: int, cycle_tick: int | None = None) -> Marble:
+        # Use recorded events
+        if cycle_tick is not None:
+            assert self.recorded_events
+            index = bisect.bisect(self.recorded_events, (cycle_tick, float("inf"))) - 1
+            last_tick, waiting, waiting_inverted, p_index = self.recorded_events[index]
+            tick_offset = cycle_tick - last_tick
         else:
             p_index = self.events[self.last_index].index
+            waiting = self.waiting
+            last_tick = self.last_tick
+            tick_offset = tick - last_tick
+            waiting_inverted = False
+
+        # Use new get_depth
+        if self.recorded_get_depth is not None:
+            depth = self.recorded_get_depth()
+            if waiting and waiting_inverted:
+                depth = depth.inverse
+        else:
+            depth = self.depth
+
+        if waiting:
+            position = self.positions[p_index]
+        else:
             i_start = bisect.bisect_left(self.invertors, p_index)
-            p_index += tick - self.last_tick
+            p_index += tick_offset
             i_stop = bisect.bisect_left(self.invertors, p_index)
             p_index %= self.length
             position = self.positions[p_index]
             invert = (i_stop - i_start) % 2
-            depth = self.depth.inverse if invert else self.depth
+            if invert:
+                depth = depth.inverse
 
         return Marble(position, depth, Direction.WEST)
 
@@ -383,14 +559,31 @@ class Circuit:
             delta += self.length
         return self.last_tick + delta
 
-    def process_event(self, simulation: Simulation):
+    def process_event(self, simulation: Simulation) -> None:
         assert not self.waiting
         self.last_index, self.last_tick = self.next_index, simulation.tick
-        self.waiting = self.events[self.last_index].process(simulation, self)
-        if self.waiting:
-            simulation.add_waiting_circuit(self)
-        else:
-            simulation.add_running_circuit(self)
+        event = self.events[self.last_index]
+        other_circuit = event.process(simulation, self)
+        for circuit in (self,) if other_circuit is None else (self, other_circuit):
+            if circuit.waiting:
+                simulation.add_waiting_circuit(circuit)
+            else:
+                simulation.add_running_circuit(circuit)
+            # Record events
+            if simulation.is_recording():
+                tick = simulation.cycle_tick
+                assert tick is not None
+                if tick > 0:
+                    item = (
+                        tick,
+                        circuit.waiting,
+                        circuit.waiting_inverted,
+                        circuit.events[circuit.last_index].index,
+                    )
+                    circuit.recorded_events.append(item)
+        if simulation.is_recording():
+            if event.callback is not None:
+                simulation.add_callback(event.callback)
 
 
 class Simulation:
@@ -411,6 +604,7 @@ class Simulation:
         self.display_info: dict[Position, tuple[set[Position], str, str]] = {}
         self.sorted_circuits: dict[int, list[Circuit]] = {}
         self.sorted_display: dict[int, list[DisplayInfo]] = {}
+        self.values = array.array("B", [0]) * len(circuits)
 
         # IO
         self.input_stream = input_stream
@@ -426,6 +620,9 @@ class Simulation:
         self.global_cycle_start_positions: set[Position] = set()
         self.global_cycle_reference_circuit: Circuit | None = None
         self.global_cycle_count: int = 0
+        self.callbacks: list[tuple[int, typing.Callable]] = []
+        self.callback_index: int | None = None
+        self.go_fast = True
 
         for circuit in circuits:
             for display_info in circuit.displays.values():
@@ -439,15 +636,37 @@ class Simulation:
         for lst in self.sorted_circuits.values():
             lst.sort()
 
+    @property
+    def cycle_tick(self) -> int | None:
+        if self.global_cycle is None:
+            return None
+        return (self.tick - self.global_cycle_start_tick) % self.global_cycle
+
+    def is_recording(self) -> bool:
+        return self.global_cycle is not None and self.global_cycle_count == 0
+
+    def has_recorded(self) -> bool:
+        return self.global_cycle_count > 0
+
+    def add_callback(self, callback: typing.Callable):
+        assert self.cycle_tick is not None
+        item = self.cycle_tick, callback
+        self.callbacks.append(item)
+
+    def get_marble(self, circuit: Circuit) -> Marble:
+        return circuit.get_marble(self.tick, self.cycle_tick)
+
     def register_cycle(self, circuit: Circuit, cycle: int) -> None:
         if self.global_cycle is not None:
             if circuit is self.global_cycle_reference_circuit:
-                assert (self.tick - self.global_cycle_start_tick) % self.global_cycle == 0
-                new_positions = {
-                    circuit.get_marble(self.tick).p for circuit in self.circuits
-                }
-                assert new_positions == self.global_cycle_start_positions
+                if self.global_cycle_count == 0:
+                    for c in self.circuits:
+                        c.stop_recording(self)
+                assert (
+                    self.tick - self.global_cycle_start_tick
+                ) % self.global_cycle == 0
                 self.global_cycle_count += 1
+                self.global_cycle_start_tick = self.tick
             return
         last_cycle = self.last_cycles.get(circuit)
         self.last_cycles[circuit] = cycle
@@ -463,9 +682,8 @@ class Simulation:
             self.global_cycle = first_key
             self.global_cycle_start_tick = self.tick
             self.global_cycle_reference_circuit = circuit
-            self.global_cycle_start_positions = {
-                circuit.get_marble(self.tick).p for circuit in self.circuits
-            }
+            for c in self.circuits:
+                c.init_recording(self.tick)
 
     @functools.lru_cache(maxsize=16)
     def get_circuits(self, min_x: int, max_x: int) -> set[Circuit]:
@@ -492,12 +710,11 @@ class Simulation:
         return result
 
     def get_marbles(self, min_x: int, max_x: int) -> set[Marble]:
-        return {
-            circuit.get_marble(self.tick) for circuit in self.get_circuits(min_x, max_x)
-        }
+        return {self.get_marble(circuit) for circuit in self.get_circuits(min_x, max_x)}
 
     def run_until(self, tick: int, deadline: float):
-        while True:
+        # Unrecorded run
+        while not self.has_recorded() or not self.go_fast:
             if not self.priority_queue:
                 raise RuntimeError("Deadlock!")
             next_tick, _, next_circuit = self.priority_queue[0]
@@ -507,6 +724,49 @@ class Simulation:
             heapq.heappop(self.priority_queue)
             self.tick = next_tick
             next_circuit.process_event(self)
+            if time.time() > deadline:
+                return
+        # Init callback index
+        if self.callback_index is None:
+            self.callback_index = 1 % len(self.callbacks)
+        # Finish current cycle
+        while self.callback_index != 0:
+            next_cycle_tick, next_callback = self.callbacks[self.callback_index]
+            if self.global_cycle_start_tick + next_cycle_tick > tick:
+                self.tick = tick
+                return
+            assert self.global_cycle_start_tick <= self.tick
+            assert self.global_cycle_start_tick + next_cycle_tick >= self.tick
+            self.tick = self.global_cycle_start_tick + next_cycle_tick
+            next_callback()
+            self.callback_index += 1
+            self.callback_index %= len(self.callbacks)
+            if time.time() > deadline:
+                return
+        # Loop over cycles
+        assert self.global_cycle is not None
+        q, r = divmod(tick - self.tick, self.global_cycle)
+        for _ in range(q):
+            self.tick = self.global_cycle_start_tick + self.global_cycle
+            for x, callback in self.callbacks:
+                callback()
+            if time.time() > deadline:
+                return
+        # Finish current cycle
+        while True:
+            next_cycle_tick, next_callback = self.callbacks[self.callback_index]
+            if self.callback_index == 0:
+                assert self.global_cycle is not None
+                next_tick = self.global_cycle_start_tick + self.global_cycle
+            else:
+                next_tick = self.global_cycle_start_tick + next_cycle_tick
+            if next_tick > tick:
+                self.tick = tick
+                return
+            self.tick = next_tick
+            next_callback()
+            self.callback_index += 1
+            self.callback_index %= len(self.callbacks)
             if time.time() > deadline:
                 return
 
@@ -578,7 +838,9 @@ def build_display_info(grid: list[dict[int, str]], position: Position) -> Displa
     return DisplayInfo(positions, GRID_OFF, GRID_ON, initial_value)
 
 
-def build_circuit(grid: list[dict[int, str]], marble: Marble) -> Circuit:
+def build_circuit(
+    grid: list[dict[int, str]], marble: Marble, circuit_id: int
+) -> Circuit:
     current_p = marble.p
     current_d = marble.d
 
@@ -675,7 +937,7 @@ def build_circuit(grid: list[dict[int, str]], marble: Marble) -> Circuit:
         current_d = new_d
 
     events[0].inverted = inverted
-    return Circuit(marble, positions, events, invertors, displays)
+    return Circuit(circuit_id, marble, positions, events, invertors, displays)
 
 
 # Drawing helpers
@@ -842,10 +1104,7 @@ class ScreenDisplay:
             return ""
         return f"\033[{i+1};{j+1}H{char or ' '}"
 
-    def draw_displays(
-        self,
-        displays: set[tuple[Position, str]]
-    ) -> str:
+    def draw_displays(self, displays: set[tuple[Position, str]]) -> str:
         result = ""
         for position, char in displays:
             result += self.draw_char(position.x, position.y, char)
@@ -968,8 +1227,8 @@ def main(
 
     # Find circuit for each marble
     circuits = []
-    for marble in marbles:
-        circuit = build_circuit(grid, marble)
+    for i, marble in enumerate(marbles):
+        circuit = build_circuit(grid, marble, i)
         circuits.append(circuit)
     simulation = Simulation(grid, circuits, input_stream, output_stream)
     display = ScreenDisplay(simulation, speed, fps)
@@ -982,7 +1241,6 @@ def main(
     finally:
         if isinstance(output_stream, io.BytesIO):
             sys.stdout.buffer.write(output_stream.getvalue())
-            print()
 
 
 def test_run():
