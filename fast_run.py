@@ -1026,6 +1026,7 @@ class ScreenDisplay:
             info += f"  | Looking for global cycle..."
         else:
             info += f"  | Global cycle: {self.simulation.global_cycle_count:4d} ({self.simulation.global_cycle:5d} ticks)"
+        info += f"  | Tick: {self.simulation.tick:8d}"
         i = self.termsize.lines - 2
         j = 0
         string = f"\033[{i+1};{j+1}H"
@@ -1237,10 +1238,15 @@ def main(
         with drawing_context():
             display.run()
 
+    # Ignore EOF error
+    except EOFError:
+        pass
+
     # Output captured IO if necessary
     finally:
         if isinstance(output_stream, io.BytesIO):
             sys.stdout.buffer.write(output_stream.getvalue())
+        print()
 
 
 def test_run():
