@@ -599,7 +599,7 @@ class Simulation:
         self.circuits = circuits
         self.waiting_circuit: dict[Position, Circuit] = {}
         self.priority_queue: list[tuple[int, int, Circuit]] = []
-        self.counter = iter(itertools.count())
+        self.counter = iter(itertools.count(0))
         self.displays: dict[Position, bool] = {}
         self.display_info: dict[Position, tuple[set[Position], str, str]] = {}
         self.sorted_circuits: dict[int, list[Circuit]] = {}
@@ -854,19 +854,34 @@ def build_circuit(
     for i in itertools.count():
         positions.append(current_p)
 
+        # Check character
+        c = get_character(grid, current_p)
+
         # Get new direction
         directions = get_directions(grid, current_p)
+
+        # Guess a missing track
+        if len(directions) == 0:
+            guessed_directions = guess_directions(grid, current_p)
+            directions = guessed_directions | {current_d.opposite}
+
+            # Go straight while on the grid
+            if c in (GRID_ON + GRID_OFF) and len(directions) == 1:
+                directions.add(current_d)
+
+            # Go straight for a one char when missing a track
+            elif directions == {current_d.opposite}:
+                directions.add(current_d)
+
         if len(directions) == 2:
             d1, d2 = directions
-            assert current_d.opposite in (d1, d2)
+            assert current_d.opposite in (d1, d2), (current_p, c)
             new_d = d2 if current_d.opposite == d1 else d1
         elif len(directions) == 4:
             new_d = current_d
         else:
-            assert False
+            assert False, (len(directions), current_p, c)
 
-        # Check character
-        c = get_character(grid, current_p)
 
         # Invertors
         if c in INVERTORS:
@@ -1062,6 +1077,7 @@ class ScreenDisplay:
                     self.speed *= 1.5
                 else:
                     self.speed /= 1.5
+                # print(self.speed)
                 self.start_time = time.time()
                 self.start_frame = self.frame
                 self.start_simulation_tick = self.simulation.tick
@@ -1085,9 +1101,9 @@ class ScreenDisplay:
         unchanged = new_marbles & self.old_marbles
         to_clear = self.old_marbles - unchanged
         to_draw = new_marbles - unchanged
-        print(self.clear_marbles(to_clear), end="")
-        print(self.draw_marbles(to_draw), end="")
         new_displays = simulation.get_display_chars(min_x, max_x)
+        print(self.clear_marbles(to_clear, new_displays), end="")
+        print(self.draw_marbles(to_draw, new_displays), end="")
         print(
             self.draw_displays(new_displays - self.old_displays),
             end="",
@@ -1125,25 +1141,32 @@ class ScreenDisplay:
                 result += self.draw_char(i, j, char)
         return result
 
-    def clear_marbles(self, marbles: set[Marble]) -> str:
+    def clear_marbles(self, marbles: set[Marble], displays: set[tuple[Position, str]]) -> str:
         grid = self.simulation.grid
         result = ""
         for marble in marbles:
             p = marble.p
             char = get_character(grid, p)
+            if char == GRID_OFF and (p, GRID_ON) in displays:
+                char = GRID_ON
+            if char == DISPLAY_OFF and (p, DISPLAY_ON) in displays:
+                char = DISPLAY_ON
             result += self.draw_char(p.x, p.y, char)
         return result
 
     def draw_marbles(
         self,
-        new_marbles: set[Marble],
-        show_LOWER: bool = True,
+        marbles: set[Marble],
+        displays: set[tuple[Position, str]],
+        show_lower: bool = True,
     ):
         result = ""
-        for marble in new_marbles:
+        for marble in marbles:
+            if (marble.p, GRID_ON) in displays:
+                continue
             if marble.z == Depth.UPPER:
                 result += self.draw_char(marble.p.x, marble.p.y, MARBLE_UPPER)
-            elif show_LOWER:
+            elif show_lower:
                 result += self.draw_char(marble.p.x, marble.p.y, MARBLE_LOWER)
         return result
 

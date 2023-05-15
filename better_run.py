@@ -1,4 +1,5 @@
 from __future__ import annotations
+import array
 import bisect
 import contextlib
 import hashlib
@@ -8,7 +9,6 @@ import enum
 import heapq
 import math
 import os
-import operator
 import pathlib
 import pickle
 import select
@@ -20,7 +20,7 @@ import sys
 import termios
 import time
 import tty
-from typing import Callable, NamedTuple, TYPE_CHECKING
+from typing import IO, Callable, NamedTuple, TYPE_CHECKING, MutableSequence
 
 import tqdm
 
@@ -29,7 +29,10 @@ import tqdm
 try:
     math.lcm
 except AttributeError:
-    lcm = lambda a, b: abs(a * b) // math.gcd(a, b)
+
+    def lcm(a, b):
+        return abs(a * b) // math.gcd(a, b)
+
     math.lcm = lambda *args: functools.reduce(lcm, args)
 
 
@@ -131,6 +134,7 @@ class DisplayInfo:
     def __init__(
         self, positions: set[Position], char_off: str, char_on: str, initial_value: bool
     ):
+        self.id: int | None = None
         self.char_on = char_on
         self.char_off = char_off
         self.value = initial_value
@@ -195,12 +199,240 @@ class Group:
         cycle_start: int,
         cycle_length: int,
         ticks_to_event_indexes: dict[Circuit, list[tuple[int, int, bool]]],
+        displays: list[DisplayInfo],
+        actions: list[tuple[int, Action]],
     ):
         self.circuits = circuits
         self.cycle_start = cycle_start
         self.cycle_length = cycle_length
         self.ticks_to_event_indexes = ticks_to_event_indexes
         self.sorted_circuits = sorted_circuits
+        self.displays = displays
+        self.actions = actions
+
+
+class Action:
+    def make_callback(
+        self,
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
+        read_bit: Callable[[], int],
+        write_bit: Callable[[int], None],
+    ) -> Callable | None:
+        raise NotImplementedError
+
+
+class StartAction(Action):
+    def __init__(self, circuit: Circuit, event: Event):
+        self.circuit_id = circuit.id
+        self.inverted = event.inverted
+
+    def make_callback(
+        self,
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
+        read_bit: Callable[[], int],
+        write_bit: Callable[[int], None],
+    ) -> Callable | None:
+        if not self.inverted:
+            return None
+
+        circuit_id = self.circuit_id
+
+        def callback():
+            values[circuit_id] ^= 1
+
+        return callback
+
+
+class UnconditionalClearAction(Action):
+    def __init__(self, circuit: Circuit, event: Event):
+        self.circuit_id = circuit.id
+        self.inverted = event.inverted
+
+    def make_callback(
+        self,
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
+        read_bit: Callable[[], int],
+        write_bit: Callable[[int], None],
+    ) -> Callable | None:
+        circuit_id = self.circuit_id
+
+        def callback():
+            values[circuit_id] = 0
+
+        return callback
+
+
+class ExitAction(Action):
+    def __init__(self, circuit: Circuit, event: Event):
+        self.circuit_id = circuit.id
+        self.inverted = event.inverted
+
+    def make_callback(
+        self,
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
+        read_bit: Callable[[], int],
+        write_bit: Callable[[int], None],
+    ) -> Callable | None:
+        circuit_id = self.circuit_id
+
+        def callback():
+            if values[circuit_id]:
+                exit()
+
+        return callback
+
+
+class DisplayAction(Action):
+    def __init__(self, circuit: Circuit, event: Event):
+        self.circuit_id = circuit.id
+        self.inverted = event.inverted
+
+        assert event.neighbor is not None
+        display_id = circuit.displays[event.neighbor].id
+        assert display_id is not None
+        self.display_id = display_id
+
+    def make_callback(
+        self,
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
+        read_bit: Callable[[], int],
+        write_bit: Callable[[int], None],
+    ) -> Callable | None:
+        circuit_id = self.circuit_id
+        display_id = self.display_id
+
+        if self.inverted:
+
+            def callback():
+                values[circuit_id] ^= 1
+                display_values[display_id] = values[circuit_id]
+
+        else:
+
+            def callback():
+                display_values[display_id] = values[circuit_id]
+
+        return callback
+
+
+class ReadBitAction(Action):
+    def __init__(self, circuit: Circuit, event: Event):
+        self.circuit_id = circuit.id
+        self.inverted = event.inverted
+
+    def make_callback(
+        self,
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
+        read_bit: Callable[[], int],
+        write_bit: Callable[[int], None],
+    ) -> Callable | None:
+        circuit_id = self.circuit_id
+
+        if self.inverted:
+
+            def callback():
+                values[circuit_id] ^= 1
+                if values[circuit_id]:
+                    values[circuit_id] = read_bit()
+
+        else:
+
+            def callback():
+                if values[circuit_id]:
+                    values[circuit_id] = read_bit()
+
+        return callback
+
+
+class WriteBitAction(Action):
+    def __init__(self, circuit: Circuit, event: Event):
+        self.circuit_id = circuit.id
+        self.value = 1 if event.event_type == EventType.WRITE_ONE else 0
+        self.inverted = event.inverted
+
+    def make_callback(
+        self,
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
+        read_bit: Callable[[], int],
+        write_bit: Callable[[int], None],
+    ) -> Callable | None:
+        circuit_id = self.circuit_id
+        value = self.value
+
+        if self.inverted:
+
+            def callback():
+                values[circuit_id] ^= 1
+                if values[circuit_id]:
+                    write_bit(value)
+
+        else:
+
+            def callback():
+                if values[circuit_id]:
+                    write_bit(value)
+
+        return callback
+
+
+class ConditionalClearAction(Action):
+    def __init__(
+        self,
+        circuit: Circuit,
+        event: Event,
+        control_circuit: Circuit,
+        control_event: Event,
+    ):
+        self.circuit_id = circuit.id
+        self.control_circuit_id = control_circuit.id
+        self.inverted = event.inverted
+        self.control_circuit_inverted = control_event.inverted
+
+    def make_callback(
+        self,
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
+        read_bit: Callable[[], int],
+        write_bit: Callable[[int], None],
+    ) -> Callable | None:
+        circuit_id = self.circuit_id
+        control_circuit_id = self.control_circuit_id
+
+        if self.inverted and self.control_circuit_inverted:
+
+            def callback():
+                values[circuit_id] ^= 1
+                values[control_circuit_id] ^= 1
+                values[circuit_id] &= values[control_circuit_id]
+
+        elif self.inverted and not self.control_circuit_inverted:
+
+            def callback():
+                values[circuit_id] ^= 1
+                values[circuit_id] &= values[control_circuit_id]
+
+        elif not self.inverted and self.control_circuit_inverted:
+
+            def callback():
+                values[control_circuit_id] ^= 1
+                values[circuit_id] &= values[control_circuit_id]
+
+        elif not self.inverted and not self.control_circuit_inverted:
+
+            def callback():
+                values[circuit_id] &= values[control_circuit_id]
+
+        else:
+            assert False
+
+        return callback
 
 
 # Characters
@@ -535,31 +767,37 @@ def process_event(
     circuit: Circuit,
     event_index: int,
     waiting_circuits: dict[Position, tuple[Circuit, int]],
-) -> tuple[bool, bool, Callable | None,]:
-    callback = None
+) -> tuple[bool, bool, Action | None,]:
     event = circuit.events[event_index]
     event_type = event.event_type
 
     if event_type == EventType.START:
-        return False, False, None
+        return False, False, StartAction(circuit, event)
     elif event_type == EventType.UNCONDITIONAL_CLEAR:
-        return False, False, callback
+        return False, False, UnconditionalClearAction(circuit, event)
     elif event_type == EventType.EXIT:
-        return False, False, callback
+        return False, False, ExitAction(circuit, event)
     elif event_type == EventType.DISPLAY:
-        return False, False, callback
+        return False, False, DisplayAction(circuit, event)
     elif event_type == EventType.READ_BIT:
-        return False, False, callback
-    elif event_type == EventType.WRITE_ONE:
-        return False, False, callback
-    elif event_type == EventType.WRITE_ZERO:
-        return False, False, callback
+        return False, False, ReadBitAction(circuit, event)
+    elif event_type in (EventType.WRITE_ZERO, EventType.WRITE_ONE):
+        return False, False, WriteBitAction(circuit, event)
     elif event_type in (EventType.CONDITIONAL_CLEAR, EventType.CONTROL):
         assert event.neighbor is not None
         if event.neighbor in waiting_circuits:
-            return False, True, callback
+            other_circuit, other_event_index = waiting_circuits[event.neighbor]
+            other_event = other_circuit.events[other_event_index]
+            if event_type == EventType.CONTROL:
+                circuit, other_circuit = other_circuit, circuit
+                event, other_event = other_event, event
+            return (
+                False,
+                True,
+                ConditionalClearAction(circuit, event, other_circuit, other_event),
+            )
         else:
-            return True, False, callback
+            return True, False, None
 
     else:
         assert False
@@ -575,6 +813,8 @@ def analyze_group(group: list[Circuit], group_id: int) -> Group:
     event_index_to_ticks: dict[Circuit, dict[int, int]] = {}
     tick_to_event_indexes: dict[Circuit, list[tuple[int, int, bool]]] = {}
     priority_queue: list[tuple[int, int, int, Circuit]] = []
+    displays: list[DisplayInfo] = []
+    actions: list[tuple[int, Action]] = []
 
     # Prepare structures
     for circuit in group:
@@ -582,6 +822,9 @@ def analyze_group(group: list[Circuit], group_id: int) -> Group:
         event_index_to_ticks[circuit] = {}
         tick_to_event_indexes[circuit] = []
         priority_queue.append((0, 0, next(counter), circuit))
+        for display in circuit.displays.values():
+            display.id = len(displays)
+            displays.append(display)
 
     # Sort circuit using min_x
     for lst in sorted_circuits.values():
@@ -639,13 +882,23 @@ def analyze_group(group: list[Circuit], group_id: int) -> Group:
                         cycle = first_key
                         start = current_tick - cycle
                         return Group(
-                            group, sorted_circuits, start, cycle, tick_to_event_indexes
+                            group,
+                            sorted_circuits,
+                            start,
+                            cycle,
+                            tick_to_event_indexes,
+                            displays,
+                            actions,
                         )
 
             # Process next_event
-            waiting, restore, callback = process_event(
+            waiting, restore, action = process_event(
                 current_circuit, event_index, waiting_circuits
             )
+
+            # Save action
+            if action is not None:
+                actions.append((current_tick, action))
 
             # Pause this circuit
             if waiting:
@@ -696,7 +949,7 @@ def get_circuits_in_window(group: Group, min_x: int, max_x: int) -> list[Circuit
 
 
 def get_marbles_in_window(
-    group: Group, tick: int, values: list[int], min_x: int, max_x: int
+    group: Group, tick: int, values: MutableSequence[int], min_x: int, max_x: int
 ) -> set[tuple[Position, int]]:
     result = set()
 
@@ -771,11 +1024,44 @@ def drawing_context():
         print()
 
 
+class SimulationIO:
+    def __init__(self, input_stream: IO[bytes], output_stream: IO[bytes]):
+        self.input_stream = input_stream
+        self.output_stream = output_stream
+        self.input_bits: list[int] = []
+        self.output_bits: list[int] = []
+
+    def write_bit(self, value: int) -> None:
+        self.output_bits.append(value)
+        if len(self.output_bits) != 8:
+            return
+        # Get byte
+        byte: int = 0
+        for x in reversed(self.output_bits):
+            byte <<= 1
+            byte += int(x)
+        self.output_bits = []
+        # Write to stream
+        if self.output_stream is None:
+            return
+        self.output_stream.write(bytes([byte]))
+        self.output_stream.flush()
+
+    def read_bit(self) -> int:
+        if not self.input_bits:
+            char = self.input_stream.read(1)
+            if not char:
+                raise EOFError
+            self.input_bits = list(map(bool, map(int, format(ord(char), "08b"))))
+        return self.input_bits.pop()
+
+
 class ScreenDisplay:
-    def __init__(self, grid: Grid, speed: float, fps: float):
+    def __init__(self, grid: Grid, speed: float, fps: float, io: SimulationIO):
         self.fps = fps
         self.grid = grid
         self.speed = speed
+        self.io = io
 
         self.x_offset = 0
         self.y_offset = 0
@@ -791,13 +1077,27 @@ class ScreenDisplay:
     def run(
         self,
         groups: list[Group],
-        values: list[int],
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
         cycle_start: int,
         cycle_length: int,
     ):
         self.start_frame = 0
         self.start_time = time.time()
         simulation_tick = start_simulation_tick = 0
+
+        # Create callbacks
+        callbacks = []
+        for group in groups:
+            group_callbacks = []
+            for tick, action in group.actions:
+                callback = action.make_callback(
+                    values, display_values, self.io.read_bit, self.io.write_bit
+                )
+                if callback is not None:
+                    item = tick, callback
+                    group_callbacks.append(item)
+            callbacks.append(group_callbacks)
 
         # Iterator over steps
         for self.frame in itertools.count(1):
@@ -813,16 +1113,17 @@ class ScreenDisplay:
 
             # Show simulation
             self.show(groups, simulation_tick, values)
-
             step2 = time.time() - previous_time - step1
 
+            # Run simulation
             delta_frame = self.frame - self.start_frame
-            simulation_tick = start_simulation_tick + int(
+            new_simulation_tick = start_simulation_tick + int(
                 delta_frame * self.speed / self.fps
             )
             deadline = self.start_time + delta_frame / self.fps
-            # simulation.run_until(simulation_tick, deadline)
-
+            for group, group_callbacks in zip(groups, callbacks):
+                pass
+            simulation_tick = new_simulation_tick
             step3 = time.time() - previous_time - step1 - step2
 
             # Wait for the next tick
@@ -897,7 +1198,9 @@ class ScreenDisplay:
                 break
         return False
 
-    def show(self, groups: list[Group], tick: int, values: list[int]) -> None:
+    def show(
+        self, groups: list[Group], tick: int, values: MutableSequence[int]
+    ) -> None:
         # Update termsize
         termsize = os.get_terminal_size()
         if termsize != self.termsize:
@@ -914,9 +1217,7 @@ class ScreenDisplay:
         marbles = {
             item
             for group in groups
-            for item in get_marbles_in_window(
-                group, tick, values, min_x, max_x
-            )
+            for item in get_marbles_in_window(group, tick, values, min_x, max_x)
         }
         # Update marbles
         print(self.clear_marbles(self.old_marbles), end="")
@@ -994,6 +1295,7 @@ class ScreenDisplay:
 
 # Main routine
 
+
 def get_sha256(path: pathlib.Path, _bufsize=2**18) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as file:
@@ -1007,8 +1309,14 @@ def get_sha256(path: pathlib.Path, _bufsize=2**18) -> str:
     return digest.hexdigest()
 
 
-
-def main(path: pathlib.Path, speed: float, fps: float, check_cache: bool):
+def main(
+    path: pathlib.Path,
+    speed: float,
+    fps: float,
+    check_cache: bool,
+    input_stream: IO[bytes] | None = None,
+    output_stream: IO[bytes] | None = None,
+):
     # Get cache name
     sha256 = get_sha256(path)[:16]
     cache_path = path.parent / (path.name + f".{sha256}.cache")
@@ -1036,13 +1344,28 @@ def main(path: pathlib.Path, speed: float, fps: float, check_cache: bool):
     cycle_start = max(group.cycle_start for group in groups)
 
     # Values
-    values = [0] * sum(len(group.circuits) for group in groups)
+    values = array.array("B", [0]) * sum(len(group.circuits) for group in groups)
+    display_values = array.array("B", [0]) * sum(
+        len(group.displays) for group in groups
+    )
+
+    # Input/Output
+    if input_stream is None and not sys.stdin.isatty():
+        input_stream = sys.stdin.buffer
+    if output_stream is None and not sys.stderr.isatty():
+        output_stream = sys.stderr.buffer
+    if input_stream is None:
+        input_stream = io.BytesIO()
+    if output_stream is None:
+        output_stream = io.BytesIO()
 
     # Simulation
     with drawing_context():
 
-        display = ScreenDisplay(grid, speed, fps)
-        display.run(groups, values, cycle_start, cycle_length)
+        # Run
+        input_output = SimulationIO(input_stream, output_stream)
+        display = ScreenDisplay(grid, speed, fps, input_output)
+        display.run(groups, values, display_values, cycle_start, cycle_length)
 
 
 if __name__ == "__main__":
@@ -1059,6 +1382,6 @@ if __name__ == "__main__":
         namespace.speed,
         namespace.fps,
         not namespace.no_cache,
-        # namespace.input,
-        # namespace.output,
+        namespace.input,
+        namespace.output,
     )
