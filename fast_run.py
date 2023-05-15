@@ -1220,7 +1220,6 @@ def main(
     grid: list[dict[int, str]] = [
         {j: char for j, char in enumerate(line) if char.strip()}
         for line in file
-        if line.strip()
     ]
 
     # Extract moving marbles from grid
