@@ -137,7 +137,7 @@ class DisplayInfo:
         self.id: int | None = None
         self.char_on = char_on
         self.char_off = char_off
-        self.value = initial_value
+        self.initial_value = initial_value
         self.on_chars = {(p, char_on) for p in positions}
         self.off_chars = {(p, char_off) for p in positions}
 
@@ -153,9 +153,6 @@ class DisplayInfo:
         if isinstance(other, int):
             return self.min_x.__lt__(other)
         raise NotImplementedError(other)
-
-    def get_display_chars(self) -> set[tuple[Position, str]]:
-        return self.on_chars if self.value else self.off_chars
 
 
 @functools.total_ordering
@@ -199,7 +196,7 @@ class Group:
         cycle_start: int,
         cycle_length: int,
         ticks_to_event_indexes: dict[Circuit, list[tuple[int, int, bool]]],
-        displays: list[DisplayInfo],
+        sorted_displays: dict[int, list[DisplayInfo]],
         actions: list[tuple[int, Action]],
     ):
         self.circuits = circuits
@@ -207,7 +204,7 @@ class Group:
         self.cycle_length = cycle_length
         self.ticks_to_event_indexes = ticks_to_event_indexes
         self.sorted_circuits = sorted_circuits
-        self.displays = displays
+        self.sorted_displays = sorted_displays
         self.actions = actions
 
 
@@ -233,14 +230,18 @@ class StartAction(Action):
         display_values: MutableSequence[int],
         read_bit: Callable[[], int],
         write_bit: Callable[[int], None],
-    ) -> Callable | None:
-        if not self.inverted:
-            return None
-
+    ) -> Callable:
         circuit_id = self.circuit_id
 
-        def callback():
-            values[circuit_id] ^= 1
+        if self.inverted:
+
+            def callback():
+                values[circuit_id] ^= 1
+
+        else:
+
+            def callback():
+                pass
 
         return callback
 
@@ -617,19 +618,19 @@ def build_circuit(
     for i in itertools.count():
         positions.append(current_p)
 
+        # Check character
+        c = get_character(grid, current_p)
+
         # Get new direction
         directions = get_directions(grid, current_p)
         if len(directions) == 2:
             d1, d2 = directions
             assert current_d.opposite in (d1, d2)
             new_d = d2 if current_d.opposite == d1 else d1
-        elif len(directions) == 4:
+        elif len(directions) == 4 or c in GRIDS:
             new_d = current_d
         else:
             assert False
-
-        # Check character
-        c = get_character(grid, current_p)
 
         # Invertors
         if c in INVERTORS:
@@ -806,6 +807,7 @@ def process_event(
 def analyze_group(group: list[Circuit], group_id: int) -> Group:
     # Prepare structures
     counter = iter(itertools.count(0))
+    display_counter = iter(itertools.count(0))
     cycle_count: dict[int, int] = {}
     last_cycles: dict[Circuit, int] = {}
     sorted_circuits: dict[int, list[Circuit]] = {}
@@ -813,7 +815,7 @@ def analyze_group(group: list[Circuit], group_id: int) -> Group:
     event_index_to_ticks: dict[Circuit, dict[int, int]] = {}
     tick_to_event_indexes: dict[Circuit, list[tuple[int, int, bool]]] = {}
     priority_queue: list[tuple[int, int, int, Circuit]] = []
-    displays: list[DisplayInfo] = []
+    sorted_displays: dict[int, list[DisplayInfo]] = {}
     actions: list[tuple[int, Action]] = []
 
     # Prepare structures
@@ -823,8 +825,8 @@ def analyze_group(group: list[Circuit], group_id: int) -> Group:
         tick_to_event_indexes[circuit] = []
         priority_queue.append((0, 0, next(counter), circuit))
         for display in circuit.displays.values():
-            display.id = len(displays)
-            displays.append(display)
+            sorted_displays.setdefault(display.max_span, []).append(display)
+            display.id = next(display_counter)
 
     # Sort circuit using min_x
     for lst in sorted_circuits.values():
@@ -887,7 +889,7 @@ def analyze_group(group: list[Circuit], group_id: int) -> Group:
                             start,
                             cycle,
                             tick_to_event_indexes,
-                            displays,
+                            sorted_displays,
                             actions,
                         )
 
@@ -948,9 +950,23 @@ def get_circuits_in_window(group: Group, min_x: int, max_x: int) -> list[Circuit
     return result
 
 
+@functools.lru_cache(maxsize=16)
+def get_displays_in_window(group: Group, min_x: int, max_x: int) -> list[DisplayInfo]:
+    result = []
+    # Get circuits in frame
+    for max_span, displays in group.sorted_displays.items():
+        index = bisect.bisect_left(displays, min_x - max_span)
+        for display in itertools.islice(displays, index, None, None):
+            if display.min_x > max_x:
+                break
+            if min_x <= display.max_x:
+                result.append(display)
+    return result
+
+
 def get_marbles_in_window(
     group: Group, tick: int, values: MutableSequence[int], min_x: int, max_x: int
-) -> set[tuple[Position, int]]:
+) -> set[tuple[Position, str]]:
     result = set()
 
     # Normalize tick
@@ -983,12 +999,168 @@ def get_marbles_in_window(
             value = values[circuit.id] ^ invert
 
         # Add marble to the result
-        result.add((position, value))
+        char = MARBLE_UPPER if value else MARBLE_LOWER
+        result.add((position, char))
 
     return result
 
 
-# Display
+def get_display_values_in_window(
+    group: Group, tick: int, values: MutableSequence[int], min_x: int, max_x: int
+) -> set[tuple[Position, str]]:
+    result = set()
+    for display in get_displays_in_window(group, min_x, max_x):
+        assert display.id is not None
+        result |= display.on_chars if values[display.id] else display.off_chars
+    return result
+
+
+# Simulation
+
+if TYPE_CHECKING:
+    CallbackItem = tuple[int, int, Callable[[], None]]
+
+
+class GroupCallbacks:
+    def __init__(self, simulation: Simulation, group: Group):
+        self.cycle_start = group.cycle_start
+        self.cycle_length = group.cycle_length
+
+        self.init_callbacks = []
+        self.cycle_callbacks = []
+
+        # Make callbacks
+        for i, (tick, action) in enumerate(group.actions):
+            callback = action.make_callback(
+                simulation.values,
+                simulation.display_values,
+                simulation.io.read_bit,
+                simulation.io.write_bit,
+            )
+            if tick < group.cycle_start:
+                item = tick, i, callback
+                self.init_callbacks.append(item)
+            else:
+                item = tick - group.cycle_start, i, callback
+                self.cycle_callbacks.append(item)
+
+        # Add extra init and cycle callbacks
+        (tick, i, callback) = self.cycle_callbacks[0]
+        self.init_callbacks.append((tick + group.cycle_start, i, callback))
+        self.cycle_callbacks.append((tick + group.cycle_length, i, callback))
+
+    def run_until(self, start: int, stop: int, deadline: float) -> int:
+        assert start < stop
+        if stop <= self.cycle_start:
+            return self.run_callbacks(
+                self.init_callbacks, start, min(stop, self.cycle_start), deadline
+            )
+        if start < self.cycle_start:
+            self.run_callbacks(
+                self.init_callbacks, start, min(stop, self.cycle_start), deadline
+            )
+        return self.cycle_start + self.run_cycle_callbacks(
+            max(start - self.cycle_start, 0), stop - self.cycle_start, deadline
+        )
+
+    def run_cycle_callbacks(self, start: int, stop: int, deadline: float) -> int:
+        # Shift to first cycle
+        if start > self.cycle_length:
+            diff = (start // self.cycle_length) * self.cycle_length
+            return diff + self.run_cycle_callbacks(start - diff, stop - diff, deadline)
+        # Stop before second cycle
+        if stop <= self.cycle_length:
+            return self.run_callbacks(self.cycle_callbacks, start, stop, deadline)
+        # Complete current cycle
+        if start != 0:
+            self.run_callbacks(self.cycle_callbacks, start, self.cycle_length, deadline)
+            return self.cycle_length + self.run_cycle_callbacks(
+                0, stop - self.cycle_length, deadline
+            )
+        # Run cycles
+        cycles, stop = divmod(stop, self.cycle_length)
+        for _ in range(cycles):
+            self.run_cycle(deadline)
+        # Complete the last run
+        return cycles * self.cycle_length + self.run_callbacks(
+            self.cycle_callbacks, 0, stop, deadline
+        )
+
+    def run_callbacks(
+        self, callbacks: list[CallbackItem], start: int, stop: int, deadline: float
+    ) -> int:
+        assert callbacks
+        start_index = bisect.bisect(callbacks, (start, -1))
+        stop_index = bisect.bisect(callbacks, (stop, -1))
+        # Run callbacks
+        for index in range(start_index, stop_index):
+            _, _, callback = callbacks[index]
+            callback()
+        return callbacks[stop_index][0]
+
+    def run_cycle(self, deadline: float):
+        stop = len(self.cycle_callbacks) - 1
+        for _, _, callback in itertools.islice(self.cycle_callbacks, stop):
+            callback()
+
+
+class Simulation:
+    def __init__(self, groups: list[Group], io: SimulationIO):
+        self.groups = groups
+        self.io = io
+
+        # Ticks
+        self.current_tick = 0
+
+        # Global cycle
+        self.cycle_length = math.lcm(*(group.cycle_length for group in groups))
+        self.cycle_start = max(group.cycle_start for group in groups)
+
+        # Initialize values
+        self.values = array.array("B", [0]) * sum(
+            len(group.circuits) for group in groups
+        )
+        self.display_values = array.array("B", [0]) * sum(
+            sum(map(len, group.sorted_displays.values())) for group in groups
+        )
+        for group in groups:
+            for circuit in group.circuits:
+                self.values[circuit.id] = circuit.init_marble.upper
+                self.values[circuit.id] ^= circuit.events[0].inverted
+            for displays in group.sorted_displays.values():
+                for display in displays:
+                    assert display.id is not None
+                    self.display_values[display.id] = display.initial_value
+
+        # Create callbacks
+        self.callbacks = [GroupCallbacks(self, group) for group in groups]
+
+    def run_until(self, target: int, deadline: float):
+        # Not yet
+        if target <= self.current_tick:
+            return
+        # Single group
+        if len(self.callbacks) == 1:
+            (group_callbacks,) = self.callbacks
+            group_callbacks.run_until(self.current_tick, target, deadline)
+            self.current_tick = target
+            return
+        # Prepare priority queue
+        queue: list[tuple[int, int, GroupCallbacks]] = []
+        for i, group_callbacks in enumerate(self.callbacks):
+            item = (self.current_tick, i, group_callbacks)
+            heapq.heappush(queue, item)
+        # Run priority queue
+        while queue[0][0] < target:
+            group_starting, i, group_callbacks = heapq.heappop(queue)
+            group_target = min(target, queue[0][0] + 1)
+            next_tick = group_callbacks.run_until(
+                group_starting, group_target, deadline
+            )
+            item = (next_tick, i, group_callbacks)
+            heapq.heappush(queue, item)
+        # Set current tick
+        self.current_tick = target
 
 
 def get_char_from_stdin() -> bytes | None:
@@ -1057,62 +1229,45 @@ class SimulationIO:
 
 
 class ScreenDisplay:
-    def __init__(self, grid: Grid, speed: float, fps: float, io: SimulationIO):
+    def __init__(self, grid: Grid, speed: float, fps: float, simulation: Simulation):
         self.fps = fps
         self.grid = grid
         self.speed = speed
-        self.io = io
+        self.io = simulation.io
+        self.simulation = simulation
 
         self.x_offset = 0
         self.y_offset = 0
         self.changed = True
         self.termsize = os.terminal_size((0, 0))
-        self.old_marbles: set[tuple[Position, int]] = set()
-        self.old_displays: set[tuple[Position, str]] = set()
+        self.old_chars: set[tuple[Position, str]] = set()
 
         self.frame: int
         self.start_time: float
         self.start_frame: int
 
-    def run(
-        self,
-        groups: list[Group],
-        values: MutableSequence[int],
-        display_values: MutableSequence[int],
-        cycle_start: int,
-        cycle_length: int,
-    ):
+    def run(self):
         self.start_frame = 0
         self.start_time = time.time()
-        simulation_tick = start_simulation_tick = 0
+        start_simulation_tick = self.simulation.current_tick
 
-        # Create callbacks
-        callbacks = []
-        for group in groups:
-            group_callbacks = []
-            for tick, action in group.actions:
-                callback = action.make_callback(
-                    values, display_values, self.io.read_bit, self.io.write_bit
-                )
-                if callback is not None:
-                    item = tick, callback
-                    group_callbacks.append(item)
-            callbacks.append(group_callbacks)
+        # Complete tick 0
+        self.simulation.run_until(1, time.time() + 1)
 
         # Iterator over steps
         for self.frame in itertools.count(1):
             previous_time = time.time()
-            previous_simulation_tick = simulation_tick
+            previous_simulation_tick = self.simulation.current_tick
 
             # Control
             if self.check_stdin():
                 self.start_time = time.time()
                 self.start_frame = self.frame
-                start_simulation_tick = simulation_tick
+                start_simulation_tick = self.simulation.current_tick
             step1 = time.time() - previous_time
 
             # Show simulation
-            self.show(groups, simulation_tick, values)
+            self.show()
             step2 = time.time() - previous_time - step1
 
             # Run simulation
@@ -1121,9 +1276,8 @@ class ScreenDisplay:
                 delta_frame * self.speed / self.fps
             )
             deadline = self.start_time + delta_frame / self.fps
-            for group, group_callbacks in zip(groups, callbacks):
-                pass
-            simulation_tick = new_simulation_tick
+
+            self.simulation.run_until(new_simulation_tick, deadline)
             step3 = time.time() - previous_time - step1 - step2
 
             # Wait for the next tick
@@ -1134,11 +1288,19 @@ class ScreenDisplay:
             step4 = time.time() - previous_time - step1 - step2 - step3
 
             actual_fps = 1 / (time.time() - previous_time)
-            actual_speed_per_frame = simulation_tick - previous_simulation_tick
+            actual_speed_per_frame = (
+                self.simulation.current_tick - previous_simulation_tick
+            )
             steps = step1, step2, step3, step4
-            cycle_count = (simulation_tick - cycle_start) // cycle_length
+            cycle_count = (
+                self.simulation.current_tick - self.simulation.cycle_start
+            ) // self.simulation.cycle_length
             self.print_status_bar(
-                actual_fps, actual_speed_per_frame, steps, cycle_count, cycle_length
+                actual_fps,
+                actual_speed_per_frame,
+                steps,
+                cycle_count,
+                self.simulation.cycle_length,
             )
 
     def print_status_bar(
@@ -1153,11 +1315,12 @@ class ScreenDisplay:
         info += f"  | Tick per frame: {speed_per_frame:5d}"
         info += f"  | Speed: {int(speed_per_frame * fps):6d}"
         info += f"  | Frame: {self.frame: 8d}"
-        sum_steps = sum(steps)
+        sum_steps = sum(steps, 0)
         stdin, show, run, sleep = [int(round(s * 100 / sum_steps)) for s in steps]
         info += f"  | Display: {show:3d} % CPU"
         info += f"  | Simulation: {run:3d} % CPU"
         info += f"  | Global cycle: {cycle_count:4d} ({cycle_length:5d} ticks)"
+        info += f"  | Tick: {self.simulation.current_tick:8d}"
         i = self.termsize.lines - 2
         j = 0
         string = f"\033[{i+1};{j+1}H"
@@ -1198,9 +1361,8 @@ class ScreenDisplay:
                 break
         return False
 
-    def show(
-        self, groups: list[Group], tick: int, values: MutableSequence[int]
-    ) -> None:
+    def show(self) -> None:
+        tick = self.simulation.current_tick - 1
         # Update termsize
         termsize = os.get_terminal_size()
         if termsize != self.termsize:
@@ -1210,39 +1372,37 @@ class ScreenDisplay:
         if self.changed:
             self.changed = False
             print(self.draw_grid(), end="")
-            self.old_marbles = set()
+            self.old_chars = set()
         # Get current window
         min_x = -self.x_offset
         max_x = min_x + self.termsize.lines - 2
         marbles = {
             item
-            for group in groups
-            for item in get_marbles_in_window(group, tick, values, min_x, max_x)
+            for group in self.simulation.groups
+            for item in get_marbles_in_window(
+                group, tick, self.simulation.values, min_x, max_x
+            )
         }
+        displays = {
+            item
+            for group in self.simulation.groups
+            for item in get_display_values_in_window(
+                group, tick, self.simulation.display_values, min_x, max_x
+            )
+        }
+        # Remove marbles from ON grid and OFF grid from marbles
+        marbles -= {(position, marble) for position, char in displays if char == GRID_ON for marble in MARBLES}
+        displays -= {(position, GRID_OFF) for position, char in marbles}
+        # Set operations
+        new_chars = marbles | displays
+        unchanged = new_chars & self.old_chars
+        to_clear = self.old_chars - unchanged
+        to_draw = new_chars - unchanged
         # Update marbles
-        print(self.clear_marbles(self.old_marbles), end="")
-        print(self.draw_marbles(marbles), end="", flush=True)
+        print(self.clear_chars(to_clear), end="")
+        print(self.draw_chars(to_draw), end="", flush=True)
         # Save marbles
-        self.old_marbles = marbles
-
-        # simulation = self.simulation
-        # termsize = os.get_terminal_size()
-        # min_x = -self.x_offset
-        # max_x = self.termsize.lines - 2 - 1 - self.x_offset
-        # new_marbles = simulation.get_marbles(min_x, max_x)
-        # unchanged = new_marbles & self.old_marbles
-        # to_clear = self.old_marbles - unchanged
-        # to_draw = new_marbles - unchanged
-        # print(self.clear_marbles(to_clear), end="")
-        # print(self.draw_marbles(to_draw), end="")
-        # new_displays = simulation.get_display_chars(min_x, max_x)
-        # print(
-        #     self.draw_displays(new_displays - self.old_displays),
-        #     end="",
-        # )
-        # print(end="", flush=True)
-        # self.old_marbles = new_marbles
-        # self.old_displays = new_displays
+        self.old_chars = marbles
 
     def draw_char(self, i: int, j: int, char: str):
         i += self.x_offset
@@ -1272,24 +1432,20 @@ class ScreenDisplay:
                 result.append(self.draw_char(i, j, char))
         return "".join(result)
 
-    def clear_marbles(self, marbles: set[tuple[Position, int]]) -> str:
+    def clear_chars(self, chars: set[tuple[Position, str]]) -> str:
         result = []
-        for position, _ in marbles:
+        for position, _ in chars:
             char = get_character(self.grid, position)
             result.append(self.draw_char(position.x, position.y, char))
         return "".join(result)
 
-    def draw_marbles(
+    def draw_chars(
         self,
-        marbles: set[tuple[Position, int]],
-        show_lower: bool = True,
+        marbles: set[tuple[Position, str]],
     ) -> str:
         result = []
         for position, value in marbles:
-            if value:
-                result.append(self.draw_char(position.x, position.y, MARBLE_UPPER))
-            elif show_lower:
-                result.append(self.draw_char(position.x, position.y, MARBLE_LOWER))
+            result.append(self.draw_char(position.x, position.y, value))
         return "".join(result)
 
 
@@ -1324,6 +1480,7 @@ def main(
     # Load grid
     with open(path) as file:
         grid = create_grid(file)
+        marbles = extract_marbles(grid)
 
     # Use cache
     if check_cache and cache_path.exists():
@@ -1332,22 +1489,11 @@ def main(
 
     # Perform analysis
     else:
-        marbles = extract_marbles(grid)
         circuits = build_circuits(grid, marbles)
         raw_groups = build_groups(circuits)
         groups = [analyze_group(group, i) for i, group in enumerate(raw_groups)]
         with open(cache_path, "wb") as file:
             pickle.dump(groups, file)
-
-    # Global cycle
-    cycle_length = math.lcm(*(group.cycle_length for group in groups))
-    cycle_start = max(group.cycle_start for group in groups)
-
-    # Values
-    values = array.array("B", [0]) * sum(len(group.circuits) for group in groups)
-    display_values = array.array("B", [0]) * sum(
-        len(group.displays) for group in groups
-    )
 
     # Input/Output
     if input_stream is None and not sys.stdin.isatty():
@@ -1360,13 +1506,23 @@ def main(
         output_stream = io.BytesIO()
 
     # Simulation
-    with drawing_context():
+    try:
+        with drawing_context():
 
-        # Run
-        input_output = SimulationIO(input_stream, output_stream)
-        display = ScreenDisplay(grid, speed, fps, input_output)
-        display.run(groups, values, display_values, cycle_start, cycle_length)
+            # Run
+            input_output = SimulationIO(input_stream, output_stream)
+            simulation = Simulation(groups, input_output)
+            display = ScreenDisplay(grid, speed, fps, simulation)
+            display.run()
 
+    # Ignore EOF
+    except EOFError:
+        pass
+    # Output captured IO if necessary
+    finally:
+        if isinstance(output_stream, io.BytesIO):
+            sys.stdout.buffer.write(output_stream.getvalue())
+        print()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -1381,7 +1537,7 @@ if __name__ == "__main__":
         namespace.file,
         namespace.speed,
         namespace.fps,
-        not namespace.no_cache,
+        False, # not namespace.no_cache,
         namespace.input,
         namespace.output,
     )
