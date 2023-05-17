@@ -9,6 +9,7 @@ import enum
 import heapq
 import math
 import os
+import random
 import pathlib
 import pickle
 import select
@@ -707,6 +708,7 @@ def build_circuit(
 
 
 def build_circuits(grid: Grid, marbles: list[Marble]) -> list[Circuit]:
+    random.shuffle(marbles)
     return [
         build_circuit(grid, marble, circuit_id)
         for circuit_id, marble in enumerate(
@@ -1049,46 +1051,58 @@ class GroupCallbacks:
         self.init_callbacks.append((tick + group.cycle_start, i, callback))
         self.cycle_callbacks.append((tick + group.cycle_length, i, callback))
 
-    def run_until(self, start: int, stop: int, deadline: float) -> int:
+    def run_until(self, start: int, stop: int, deadline: float) -> tuple[bool, int]:
         assert start < stop
         if stop <= self.cycle_start:
             return self.run_callbacks(
                 self.init_callbacks, start, min(stop, self.cycle_start), deadline
             )
         if start < self.cycle_start:
-            self.run_callbacks(
+            interrupted, next_tick = self.run_callbacks(
                 self.init_callbacks, start, min(stop, self.cycle_start), deadline
             )
-        return self.cycle_start + self.run_cycle_callbacks(
+            if interrupted:
+                return interrupted, next_tick
+        interrupted, next_tick = self.run_cycle_callbacks(
             max(start - self.cycle_start, 0), stop - self.cycle_start, deadline
         )
+        return interrupted, self.cycle_start + next_tick
 
-    def run_cycle_callbacks(self, start: int, stop: int, deadline: float) -> int:
+    def run_cycle_callbacks(self, start: int, stop: int, deadline: float) -> tuple[bool, int]:
         # Shift to first cycle
         if start > self.cycle_length:
             diff = (start // self.cycle_length) * self.cycle_length
-            return diff + self.run_cycle_callbacks(start - diff, stop - diff, deadline)
+            interrupted, next_tick = self.run_cycle_callbacks(start - diff, stop - diff, deadline)
+            return interrupted, diff + next_tick
         # Stop before second cycle
         if stop <= self.cycle_length:
             return self.run_callbacks(self.cycle_callbacks, start, stop, deadline)
         # Complete current cycle
         if start != 0:
-            self.run_callbacks(self.cycle_callbacks, start, self.cycle_length, deadline)
-            return self.cycle_length + self.run_cycle_callbacks(
+            interrupted, next_tick = self.run_callbacks(self.cycle_callbacks, start, self.cycle_length, deadline)
+            if interrupted:
+                return interrupted, next_tick
+            interrupted, next_tick = self.run_cycle_callbacks(
                 0, stop - self.cycle_length, deadline
             )
+            return interrupted, self.cycle_length + next_tick
         # Run cycles
         cycles, stop = divmod(stop, self.cycle_length)
-        for _ in range(cycles):
-            self.run_cycle(deadline)
+        for i in range(cycles):
+            interrupted, next_tick = self.run_cycle(deadline)
+            if interrupted:
+                return interrupted, i * self.cycle_length + next_tick
         # Complete the last run
-        return cycles * self.cycle_length + self.run_callbacks(
+        interrupted, next_tick = self.run_callbacks(
             self.cycle_callbacks, 0, stop, deadline
         )
+        return interrupted, cycles * self.cycle_length + next_tick
 
     def run_callbacks(
         self, callbacks: list[CallbackItem], start: int, stop: int, deadline: float
-    ) -> int:
+    ) -> tuple[bool, int]:
+        if time.time() > deadline:
+            return True, start
         assert callbacks
         start_index = bisect.bisect(callbacks, (start, -1))
         stop_index = bisect.bisect(callbacks, (stop, -1))
@@ -1096,12 +1110,22 @@ class GroupCallbacks:
         for index in range(start_index, stop_index):
             _, _, callback = callbacks[index]
             callback()
-        return callbacks[stop_index][0]
+        return False, callbacks[stop_index][0]
 
-    def run_cycle(self, deadline: float):
+    def run_cycle(self, deadline: float)-> tuple[bool, int]:
+        cycle_callbacks = self.cycle_callbacks
         stop = len(self.cycle_callbacks) - 1
-        for _, _, callback in itertools.islice(self.cycle_callbacks, stop):
+        interrupt = False
+        previous_tick = None
+        for i in range(0, stop):
+            tick, _, callback = cycle_callbacks[i]
+            if i % 100 == 0 and time.time() > deadline:
+                interrupt = True
+            if interrupt and tick != previous_tick:
+                return True, tick
             callback()
+            previous_tick = tick
+        return False, self.cycle_length
 
 
 class Simulation:
@@ -1142,8 +1166,8 @@ class Simulation:
         # Single group
         if len(self.callbacks) == 1:
             (group_callbacks,) = self.callbacks
-            group_callbacks.run_until(self.current_tick, target, deadline)
-            self.current_tick = target
+            interrupted, next_tick = group_callbacks.run_until(self.current_tick, target, deadline)
+            self.current_tick = min(next_tick, target)
             return
         # Prepare priority queue
         queue: list[tuple[int, int, GroupCallbacks]] = []
@@ -1154,14 +1178,18 @@ class Simulation:
         while queue[0][0] < target:
             group_starting, i, group_callbacks = heapq.heappop(queue)
             group_target = min(target, queue[0][0] + 1)
-            next_tick = group_callbacks.run_until(
+            interrupted, next_tick = group_callbacks.run_until(
                 group_starting, group_target, deadline
             )
             item = (next_tick, i, group_callbacks)
             heapq.heappush(queue, item)
+            if interrupted:
+                break
         # Set current tick
-        self.current_tick = target
+        self.current_tick = min(queue[0][0], target)
 
+
+# Display
 
 def get_char_from_stdin() -> bytes | None:
     fd = sys.stdin.fileno()
@@ -1192,8 +1220,8 @@ def drawing_context():
         print("\033[?1049h", end="", flush=True)
         # Show cursor
         print("\033[?25h", end="", flush=True)
-        # Line feed
-        print()
+        # Return
+        print("\r", end="", flush=True)
 
 
 class SimulationIO:
@@ -1247,12 +1275,13 @@ class ScreenDisplay:
         self.start_frame: int
 
     def run(self):
+        # Complete tick 0
+        self.simulation.run_until(1, time.time() + 1)
+
+        # Save information
         self.start_frame = 0
         self.start_time = time.time()
         start_simulation_tick = self.simulation.current_tick
-
-        # Complete tick 0
-        self.simulation.run_until(1, time.time() + 1)
 
         # Iterator over steps
         for self.frame in itertools.count(1):
@@ -1276,7 +1305,6 @@ class ScreenDisplay:
                 delta_frame * self.speed / self.fps
             )
             deadline = self.start_time + delta_frame / self.fps
-
             self.simulation.run_until(new_simulation_tick, deadline)
             step3 = time.time() - previous_time - step1 - step2
 
@@ -1312,14 +1340,15 @@ class ScreenDisplay:
         cycle_length: int,
     ):
         info = f"FPS: {fps:7.2f} "
-        info += f"  | Tick per frame: {speed_per_frame:5d}"
-        info += f"  | Speed: {int(speed_per_frame * fps):6d}"
+        info += f"  | Tick per frame: {speed_per_frame:8d}"
+        info += f"  | Speed: {int(speed_per_frame * fps):8d}"
         info += f"  | Frame: {self.frame: 8d}"
         sum_steps = sum(steps, 0)
         stdin, show, run, sleep = [int(round(s * 100 / sum_steps)) for s in steps]
         info += f"  | Display: {show:3d} % CPU"
         info += f"  | Simulation: {run:3d} % CPU"
-        info += f"  | Global cycle: {cycle_count:4d} ({cycle_length:5d} ticks)"
+        info += f"  | Current cycle: {cycle_count:4d} ({cycle_length:5d} ticks)"
+        info += f"  | Cycle speed: {speed_per_frame * fps / self.simulation.cycle_length:4.1f}"
         info += f"  | Tick: {self.simulation.current_tick:8d}"
         i = self.termsize.lines - 2
         j = 0
@@ -1492,8 +1521,8 @@ def main(
         circuits = build_circuits(grid, marbles)
         raw_groups = build_groups(circuits)
         groups = [analyze_group(group, i) for i, group in enumerate(raw_groups)]
-        with open(cache_path, "wb") as file:
-            pickle.dump(groups, file)
+        # with open(cache_path, "wb") as file:
+        #     pickle.dump(groups, file)
 
     # Input/Output
     if input_stream is None and not sys.stdin.isatty():
