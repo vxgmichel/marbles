@@ -806,15 +806,33 @@ def process_event(
         assert False
 
 
+class TickInfo:
+    def __init__(self, last_tick_info: TickInfo | None, tick_enter: int, waiting: bool):
+        self.waiting = waiting
+        self.tick_enter = tick_enter
+        self.last_tick_info = last_tick_info
+        self.tick_exit = tick_enter + 1 if not waiting else None
+
+    def get_cycle(self) -> int | None:
+        if self.tick_exit is None:
+            return None
+        if self.last_tick_info is None:
+            return None
+        if self.last_tick_info.tick_exit is None:
+            return None
+        return self.tick_exit - self.last_tick_info.tick_exit
+
+
 def analyze_group(group: list[Circuit], group_id: int) -> Group:
     # Prepare structures
     counter = iter(itertools.count(0))
     display_counter = iter(itertools.count(0))
     cycle_count: dict[int, int] = {}
-    last_cycles: dict[Circuit, int] = {}
+    waiting_infos: set[tuple[int, int, int]] = set()
+    tick_infos: dict[Circuit, TickInfo] = {}
     sorted_circuits: dict[int, list[Circuit]] = {}
     waiting_circuits: dict[Position, tuple[Circuit, int]] = {}
-    event_index_to_ticks: dict[Circuit, dict[int, int]] = {}
+    event_index_to_ticks: dict[Circuit, dict[int, TickInfo]] = {}
     tick_to_event_indexes: dict[Circuit, list[tuple[int, int, bool]]] = {}
     priority_queue: list[tuple[int, int, int, Circuit]] = []
     sorted_displays: dict[int, list[DisplayInfo]] = {}
@@ -855,50 +873,91 @@ def analyze_group(group: list[Circuit], group_id: int) -> Group:
                 priority_queue
             )
 
+            # Process next_event
+            waiting, restore, action = process_event(
+                current_circuit, event_index, waiting_circuits
+            )
+
             # Update progress bar
             progress_bar.n = current_tick
             progress_bar.update(0)
 
             # Save tick info
             current_event_index_to_ticks = event_index_to_ticks[current_circuit]
-            last_tick = current_event_index_to_ticks.get(event_index)
-            current_event_index_to_ticks[event_index] = current_tick
+            last_tick_info = current_event_index_to_ticks.get(event_index)
+            current_tick_info = TickInfo(last_tick_info, current_tick, waiting)
+            current_event_index_to_ticks[event_index] = current_tick_info
 
-            # Save cycle info
-            if last_tick is not None:
-                cycle = current_tick - last_tick
-                last_cycle = last_cycles.get(current_circuit)
-                last_cycles[current_circuit] = cycle
-
-                # Update cycle count
-                if cycle != last_cycle:
+            # Update data for restored circuit
+            if restore:
+                # Find restored circuit
+                neighbor = current_circuit.events[event_index].neighbor
+                assert neighbor is not None
+                restored_circuit, _ = waiting_circuits[neighbor]
+                # Update tick exit
+                tick_infos[restored_circuit].tick_exit = current_tick + 1
+                # Get last tick info
+                restored_last_tick_info = tick_infos[restored_circuit].last_tick_info
+                if restored_last_tick_info is not None:
+                    # Remove from waiting dicts
+                    assert restored_last_tick_info.tick_exit is not None
+                    item = (
+                        restored_circuit.id,
+                        restored_last_tick_info.tick_enter,
+                        restored_last_tick_info.tick_exit,
+                    )
+                    waiting_infos.remove(item)
+                    # Add to cycle dict
+                    cycle = tick_infos[restored_circuit].get_cycle()
+                    assert cycle is not None
                     cycle_count.setdefault(cycle, 0)
                     cycle_count[cycle] += 1
-                    if last_cycle is not None:
-                        cycle_count[last_cycle] -= 1
-                        if cycle_count[last_cycle] == 0:
-                            del cycle_count[last_cycle]
 
-                    # Check for global cycle
-                    first_key, first_value = next(iter(cycle_count.items()))
-                    if first_value == len(group):
-                        assert len(cycle_count) == 1
-                        cycle = first_key
-                        start = current_tick - cycle
-                        return Group(
-                            group,
-                            sorted_circuits,
-                            start,
-                            cycle,
-                            tick_to_event_indexes,
-                            sorted_displays,
-                            actions,
-                        )
+            # Get last cycle
+            if current_circuit in tick_infos:
+                last_cycle = tick_infos[current_circuit].get_cycle()
+                # Remove from cycles
+                if last_cycle is not None:
+                    cycle_count[last_cycle] -= 1
+                    if cycle_count[last_cycle] == 0:
+                        del cycle_count[last_cycle]
+            # Set current tick info
+            tick_infos[current_circuit] = current_tick_info
+            # Update waiting dicts if waiting
+            if last_tick_info is not None and waiting:
+                assert last_tick_info.tick_exit is not None
+                item = (
+                    current_circuit.id,
+                    last_tick_info.tick_enter,
+                    last_tick_info.tick_exit,
+                )
+                waiting_infos.add(item)
+            # Update cycle count if not waiting
+            elif last_tick_info:
+                cycle = current_tick_info.get_cycle()
+                assert cycle is not None
+                cycle_count.setdefault(cycle, 0)
+                cycle_count[cycle] += 1
 
-            # Process next_event
-            waiting, restore, action = process_event(
-                current_circuit, event_index, waiting_circuits
-            )
+            # Check for global cycle
+            if len(cycle_count) == 1:
+                first_key, first_value = next(iter(cycle_count.items()))
+                cycle = first_key
+                reference = current_tick - cycle
+                if len(waiting_infos) + first_value == len(group) and all(
+                    tick_enter <= reference < tick_exit
+                    for _, tick_enter, tick_exit in waiting_infos
+                ):
+                    start = current_tick - cycle
+                    return Group(
+                        group,
+                        sorted_circuits,
+                        start,
+                        cycle,
+                        tick_to_event_indexes,
+                        sorted_displays,
+                        actions,
+                    )
 
             # Save action
             if action is not None:
@@ -1068,18 +1127,24 @@ class GroupCallbacks:
         )
         return interrupted, self.cycle_start + next_tick
 
-    def run_cycle_callbacks(self, start: int, stop: int, deadline: float) -> tuple[bool, int]:
+    def run_cycle_callbacks(
+        self, start: int, stop: int, deadline: float
+    ) -> tuple[bool, int]:
         # Shift to first cycle
         if start > self.cycle_length:
             diff = (start // self.cycle_length) * self.cycle_length
-            interrupted, next_tick = self.run_cycle_callbacks(start - diff, stop - diff, deadline)
+            interrupted, next_tick = self.run_cycle_callbacks(
+                start - diff, stop - diff, deadline
+            )
             return interrupted, diff + next_tick
         # Stop before second cycle
         if stop <= self.cycle_length:
             return self.run_callbacks(self.cycle_callbacks, start, stop, deadline)
         # Complete current cycle
         if start != 0:
-            interrupted, next_tick = self.run_callbacks(self.cycle_callbacks, start, self.cycle_length, deadline)
+            interrupted, next_tick = self.run_callbacks(
+                self.cycle_callbacks, start, self.cycle_length, deadline
+            )
             if interrupted:
                 return interrupted, next_tick
             interrupted, next_tick = self.run_cycle_callbacks(
@@ -1112,7 +1177,7 @@ class GroupCallbacks:
             callback()
         return False, callbacks[stop_index][0]
 
-    def run_cycle(self, deadline: float)-> tuple[bool, int]:
+    def run_cycle(self, deadline: float) -> tuple[bool, int]:
         cycle_callbacks = self.cycle_callbacks
         stop = len(self.cycle_callbacks) - 1
         interrupt = False
@@ -1166,7 +1231,9 @@ class Simulation:
         # Single group
         if len(self.callbacks) == 1:
             (group_callbacks,) = self.callbacks
-            interrupted, next_tick = group_callbacks.run_until(self.current_tick, target, deadline)
+            interrupted, next_tick = group_callbacks.run_until(
+                self.current_tick, target, deadline
+            )
             self.current_tick = min(next_tick, target)
             return
         # Prepare priority queue
@@ -1190,6 +1257,7 @@ class Simulation:
 
 
 # Display
+
 
 def get_char_from_stdin() -> bytes | None:
     fd = sys.stdin.fileno()
@@ -1420,7 +1488,12 @@ class ScreenDisplay:
             )
         }
         # Remove marbles from ON grid and OFF grid from marbles
-        marbles -= {(position, marble) for position, char in displays if char == GRID_ON for marble in MARBLES}
+        marbles -= {
+            (position, marble)
+            for position, char in displays
+            if char == GRID_ON
+            for marble in MARBLES
+        }
         displays -= {(position, GRID_OFF) for position, char in marbles}
         # Set operations
         new_chars = marbles | displays
@@ -1553,6 +1626,7 @@ def main(
             sys.stdout.buffer.write(output_stream.getvalue())
         print()
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("file", type=pathlib.Path)
@@ -1566,7 +1640,7 @@ if __name__ == "__main__":
         namespace.file,
         namespace.speed,
         namespace.fps,
-        False, # not namespace.no_cache,
+        False,  # not namespace.no_cache,
         namespace.input,
         namespace.output,
     )
