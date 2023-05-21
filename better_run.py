@@ -25,6 +25,11 @@ from typing import IO, Callable, Iterator, NamedTuple, TYPE_CHECKING, MutableSeq
 
 import tqdm
 
+try:
+    import msgpack
+except ImportError:
+    msgpack = None
+
 # Compatibility
 
 try:
@@ -231,24 +236,119 @@ class Group:
         self.ticks_to_event_indexes = ticks_to_event_indexes
         self.actions = actions
 
+    def extract_info(self):
+        return GroupInfo(
+            self.cycle_start,
+            self.cycle_length,
+            self.actions,
+        )
+
+
+class ActionType(enum.IntEnum):
+    START = 0
+    CLEAR = 1
+    EXIT = 2
+    DISPLAY = 3
+    READ = 4
+    WRITE = 5
+    AND = 6
+
 
 class Action:
+    def __init__(
+        self,
+        action_type: int,
+        circuit_id: int,
+        inverted: bool,
+        extra: int = 0,
+        extra2: int = 0,
+    ):
+        self.action_type = action_type
+        self.circuit_id = circuit_id
+        self.inverted = inverted
+        self.extra = extra
+        self.extra2 = extra2
+
+    def dump(self):
+        return [
+            self.action_type,
+            self.circuit_id,
+            self.inverted,
+            self.extra,
+            self.extra2,
+        ]
+
+    @classmethod
+    def load(cls, args: list):
+        return cls(*args)
+
+    @classmethod
+    def make_start_action(cls, circuit: Circuit, event: Event):
+        return cls(ActionType.START, circuit.id, event.inverted)
+
+    @classmethod
+    def make_clear_action(cls, circuit: Circuit, event: Event):
+        return cls(ActionType.CLEAR, circuit.id, event.inverted)
+
+    @classmethod
+    def make_exit_action(cls, circuit: Circuit, event: Event):
+        return cls(ActionType.EXIT, circuit.id, event.inverted)
+
+    @classmethod
+    def make_display_action(cls, circuit: Circuit, event: Event):
+        assert event.neighbor is not None
+        display_id = circuit.displays[event.neighbor].id
+        assert display_id is not None
+        return cls(ActionType.DISPLAY, circuit.id, event.inverted, extra=display_id)
+
+    @classmethod
+    def make_read_action(cls, circuit: Circuit, event: Event):
+        return cls(ActionType.READ, circuit.id, event.inverted)
+
+    @classmethod
+    def make_write_action(cls, circuit: Circuit, event: Event):
+        value = 1 if event.event_type == EventType.WRITE_ONE else 0
+        return cls(ActionType.WRITE, circuit.id, event.inverted, extra=value)
+
+    @classmethod
+    def make_and_action(
+        cls,
+        circuit: Circuit,
+        event: Event,
+        control_circuit: Circuit,
+        control_event: Event,
+    ):
+        return cls(
+            ActionType.AND,
+            circuit.id,
+            event.inverted,
+            extra=control_circuit.id,
+            extra2=control_event.inverted,
+        )
+
     def make_callback(
         self,
         values: MutableSequence[int],
         display_values: MutableSequence[int],
         read_bit: Callable[[], int],
         write_bit: Callable[[int], None],
-    ) -> Callable | None:
-        raise NotImplementedError
+        cache: dict = {},
+    ) -> Callable:
+        if not cache:
+            cache.update(
+                {
+                    ActionType.START: type(self).make_start_callback,
+                    ActionType.CLEAR: type(self).make_clear_callback,
+                    ActionType.EXIT: type(self).make_exit_callback,
+                    ActionType.DISPLAY: type(self).make_display_callback,
+                    ActionType.READ: type(self).make_read_callback,
+                    ActionType.WRITE: type(self).make_write_callback,
+                    ActionType.AND: type(self).make_and_callback,
+                }
+            )
+        return cache[self.action_type](self, values, display_values, read_bit, write_bit)
 
-
-class StartAction(Action):
-    def __init__(self, circuit: Circuit, event: Event):
-        self.circuit_id = circuit.id
-        self.inverted = event.inverted
-
-    def make_callback(
+    def make_start_callback(
         self,
         values: MutableSequence[int],
         display_values: MutableSequence[int],
@@ -269,13 +369,7 @@ class StartAction(Action):
 
         return callback
 
-
-class UnconditionalClearAction(Action):
-    def __init__(self, circuit: Circuit, event: Event):
-        self.circuit_id = circuit.id
-        self.inverted = event.inverted
-
-    def make_callback(
+    def make_clear_callback(
         self,
         values: MutableSequence[int],
         display_values: MutableSequence[int],
@@ -289,13 +383,7 @@ class UnconditionalClearAction(Action):
 
         return callback
 
-
-class ExitAction(Action):
-    def __init__(self, circuit: Circuit, event: Event):
-        self.circuit_id = circuit.id
-        self.inverted = event.inverted
-
-    def make_callback(
+    def make_exit_callback(
         self,
         values: MutableSequence[int],
         display_values: MutableSequence[int],
@@ -310,18 +398,7 @@ class ExitAction(Action):
 
         return callback
 
-
-class DisplayAction(Action):
-    def __init__(self, circuit: Circuit, event: Event):
-        self.circuit_id = circuit.id
-        self.inverted = event.inverted
-
-        assert event.neighbor is not None
-        display_id = circuit.displays[event.neighbor].id
-        assert display_id is not None
-        self.display_id = display_id
-
-    def make_callback(
+    def make_display_callback(
         self,
         values: MutableSequence[int],
         display_values: MutableSequence[int],
@@ -329,7 +406,7 @@ class DisplayAction(Action):
         write_bit: Callable[[int], None],
     ) -> Callable | None:
         circuit_id = self.circuit_id
-        display_id = self.display_id
+        display_id = self.extra
 
         if self.inverted:
 
@@ -344,13 +421,7 @@ class DisplayAction(Action):
 
         return callback
 
-
-class ReadBitAction(Action):
-    def __init__(self, circuit: Circuit, event: Event):
-        self.circuit_id = circuit.id
-        self.inverted = event.inverted
-
-    def make_callback(
+    def make_read_callback(
         self,
         values: MutableSequence[int],
         display_values: MutableSequence[int],
@@ -374,14 +445,7 @@ class ReadBitAction(Action):
 
         return callback
 
-
-class WriteBitAction(Action):
-    def __init__(self, circuit: Circuit, event: Event):
-        self.circuit_id = circuit.id
-        self.value = 1 if event.event_type == EventType.WRITE_ONE else 0
-        self.inverted = event.inverted
-
-    def make_callback(
+    def make_write_callback(
         self,
         values: MutableSequence[int],
         display_values: MutableSequence[int],
@@ -389,7 +453,7 @@ class WriteBitAction(Action):
         write_bit: Callable[[int], None],
     ) -> Callable | None:
         circuit_id = self.circuit_id
-        value = self.value
+        value = self.extra
 
         if self.inverted:
 
@@ -406,21 +470,7 @@ class WriteBitAction(Action):
 
         return callback
 
-
-class ConditionalClearAction(Action):
-    def __init__(
-        self,
-        circuit: Circuit,
-        event: Event,
-        control_circuit: Circuit,
-        control_event: Event,
-    ):
-        self.circuit_id = circuit.id
-        self.control_circuit_id = control_circuit.id
-        self.inverted = event.inverted
-        self.control_circuit_inverted = control_event.inverted
-
-    def make_callback(
+    def make_and_callback(
         self,
         values: MutableSequence[int],
         display_values: MutableSequence[int],
@@ -428,28 +478,29 @@ class ConditionalClearAction(Action):
         write_bit: Callable[[int], None],
     ) -> Callable | None:
         circuit_id = self.circuit_id
-        control_circuit_id = self.control_circuit_id
+        control_circuit_id = self.extra
+        control_circuit_inverted = self.extra2
 
-        if self.inverted and self.control_circuit_inverted:
+        if self.inverted and control_circuit_inverted:
 
             def callback():
                 values[circuit_id] ^= 1
                 values[control_circuit_id] ^= 1
                 values[circuit_id] &= values[control_circuit_id]
 
-        elif self.inverted and not self.control_circuit_inverted:
+        elif self.inverted and not control_circuit_inverted:
 
             def callback():
                 values[circuit_id] ^= 1
                 values[circuit_id] &= values[control_circuit_id]
 
-        elif not self.inverted and self.control_circuit_inverted:
+        elif not self.inverted and control_circuit_inverted:
 
             def callback():
                 values[control_circuit_id] ^= 1
                 values[circuit_id] &= values[control_circuit_id]
 
-        elif not self.inverted and not self.control_circuit_inverted:
+        elif not self.inverted and not control_circuit_inverted:
 
             def callback():
                 values[circuit_id] &= values[control_circuit_id]
@@ -798,17 +849,17 @@ def process_event(
     event_type = event.event_type
 
     if event_type == EventType.START:
-        return False, False, StartAction(circuit, event)
+        return False, False, Action.make_start_action(circuit, event)
     elif event_type == EventType.UNCONDITIONAL_CLEAR:
-        return False, False, UnconditionalClearAction(circuit, event)
+        return False, False, Action.make_clear_action(circuit, event)
     elif event_type == EventType.EXIT:
-        return False, False, ExitAction(circuit, event)
+        return False, False, Action.make_exit_action(circuit, event)
     elif event_type == EventType.DISPLAY:
-        return False, False, DisplayAction(circuit, event)
+        return False, False, Action.make_display_action(circuit, event)
     elif event_type == EventType.READ_BIT:
-        return False, False, ReadBitAction(circuit, event)
+        return False, False, Action.make_read_action(circuit, event)
     elif event_type in (EventType.WRITE_ZERO, EventType.WRITE_ONE):
-        return False, False, WriteBitAction(circuit, event)
+        return False, False, Action.make_write_action(circuit, event)
     elif event_type in (EventType.CONDITIONAL_CLEAR, EventType.CONTROL):
         assert event.neighbor is not None
         if event.neighbor in waiting_circuits:
@@ -820,7 +871,7 @@ def process_event(
             return (
                 False,
                 True,
-                ConditionalClearAction(circuit, event, other_circuit, other_event),
+                Action.make_and_action(circuit, event, other_circuit, other_event),
             )
         else:
             return True, False, None
@@ -1018,8 +1069,97 @@ def analyze_groups(raw_groups: list[list[Circuit]]) -> list[Group]:
     ]
 
 
-# Screen info
+# Simulation info
 
+
+class GroupInfo:
+    def __init__(self, cycle_start: int, cycle_length, actions: list[tuple[int, Action]]):
+        self.cycle_start = cycle_start
+        self.cycle_length = cycle_length
+        self.actions = actions
+
+    def dump(self):
+        actions = [[tick, *action.dump()] for tick, action in self.actions]
+        return [
+            self.cycle_start,
+            self.cycle_length,
+            actions,
+        ]
+
+    @classmethod
+    def load(cls, args: list):
+        cycle_start, cycle_length, raw_actions = args
+        actions = [(raw[0], Action.load(raw[1:])) for raw in raw_actions]
+        return cls(cycle_start, cycle_length, actions)
+
+
+class SimulationInfo:
+    def __init__(
+        self,
+        cycle_start: int,
+        cycle_length: int,
+        group_number: int,
+        initial_marble_values: list[int],
+        initial_display_values: list[int],
+    ):
+        self.cycle_start = cycle_start
+        self.cycle_length = cycle_length
+        self.group_number = group_number
+        self.initial_marble_values = initial_marble_values
+        self.initial_display_values = initial_display_values
+
+    @property
+    def circuit_number(self) -> int:
+        return len(self.initial_marble_values)
+
+    @property
+    def display_number(self) -> int:
+        return len(self.initial_display_values)
+
+    def dump(self):
+        return [
+            self.cycle_start,
+            self.cycle_length,
+            self.group_number,
+            self.initial_marble_values,
+            self.initial_display_values,
+        ]
+
+    @classmethod
+    def load(cls, args: list):
+        return cls(*args)
+
+    @classmethod
+    def from_groups(cls, groups: list[Group]):
+        # Global cycle
+        cycle_length = math.lcm(*(group.cycle_length for group in groups))
+        cycle_start = max(group.cycle_start for group in groups)
+
+        # Initialize values
+        marble_values = [0] * sum(
+            len(group.circuits) for group in groups
+        )
+        display_values = [0] * sum(
+            len(group.displays) for group in groups
+        )
+        for group in groups:
+            for circuit in group.circuits:
+                marble_values[circuit.id] = circuit.init_marble.upper
+                marble_values[circuit.id] ^= circuit.events[0].inverted
+            for display in group.displays:
+                assert display.id is not None
+                display_values[display.id] = display.initial_value
+
+        return cls(
+            cycle_start,
+            cycle_length,
+            len(groups),
+            marble_values,
+            display_values,
+        )
+
+
+# Screen info
 
 class CircuitInfo:
     def __init__(
@@ -1240,32 +1380,43 @@ if TYPE_CHECKING:
 
 
 class GroupCallbacks:
-    def __init__(self, simulation: Simulation, group: Group):
-        self.cycle_start = group.cycle_start
-        self.cycle_length = group.cycle_length
+    def __init__(self, group_id: int, group_info: GroupInfo):
+        self.group_id = group_id
+        self.cycle_start = group_info.cycle_start
+        self.cycle_length = group_info.cycle_length
 
+        self.init_callbacks = []
+        self.cycle_callbacks = []
+        self.group_info = group_info
+
+    def compile(self, simulation: Simulation):
         self.init_callbacks = []
         self.cycle_callbacks = []
 
         # Make callbacks
-        for i, (tick, action) in enumerate(group.actions):
+        for i, (tick, action) in enumerate(tqdm.tqdm(
+            self.group_info.actions,
+            desc=f"Compiling callbacks for group {self.group_id}",
+            unit=" callbacks",
+            colour="green",
+        )):
             callback = action.make_callback(
                 simulation.values,
                 simulation.display_values,
                 simulation.io.read_bit,
                 simulation.io.write_bit,
             )
-            if tick < group.cycle_start:
+            if tick < self.cycle_start:
                 item = tick, i, callback
                 self.init_callbacks.append(item)
             else:
-                item = tick - group.cycle_start, i, callback
+                item = tick - self.cycle_start, i, callback
                 self.cycle_callbacks.append(item)
 
         # Add extra init and cycle callbacks
         (tick, i, callback) = self.cycle_callbacks[0]
-        self.init_callbacks.append((tick + group.cycle_start, i, callback))
-        self.cycle_callbacks.append((tick + group.cycle_length, i, callback))
+        self.init_callbacks.append((tick + self.cycle_start, i, callback))
+        self.cycle_callbacks.append((tick + self.cycle_length, i, callback))
 
     def run_until(self, start: int, stop: int, deadline: float) -> tuple[bool, int]:
         assert start < stop
@@ -1351,34 +1502,28 @@ class GroupCallbacks:
 
 
 class Simulation:
-    def __init__(self, groups: list[Group], io: SimulationIO):
-        self.groups = groups
+    def __init__(self, simulation_info: SimulationInfo, group_infos: list[GroupInfo], io: SimulationIO):
+        self.simulation_info = simulation_info
+        self.group_infos = group_infos
         self.io = io
 
         # Ticks
         self.current_tick = 0
 
         # Global cycle
-        self.cycle_length = math.lcm(*(group.cycle_length for group in groups))
-        self.cycle_start = max(group.cycle_start for group in groups)
+        self.cycle_start = simulation_info.cycle_start
+        self.cycle_length = simulation_info.cycle_length
 
         # Initialize values
-        self.values = array.array("B", [0]) * sum(
-            len(group.circuits) for group in groups
-        )
-        self.display_values = array.array("B", [0]) * sum(
-            len(group.displays) for group in groups
-        )
-        for group in groups:
-            for circuit in group.circuits:
-                self.values[circuit.id] = circuit.init_marble.upper
-                self.values[circuit.id] ^= circuit.events[0].inverted
-            for display in group.displays:
-                assert display.id is not None
-                self.display_values[display.id] = display.initial_value
+        self.values = array.array("B", simulation_info.initial_marble_values)
+        self.display_values = array.array("B", simulation_info.initial_display_values)
 
         # Create callbacks
-        self.callbacks = [GroupCallbacks(self, group) for group in groups]
+        self.callbacks = [GroupCallbacks(i, group_info) for i, group_info in enumerate(group_infos)]
+
+    def compile(self):
+        for callback in self.callbacks:
+            callback.compile(self)
 
     def run_until(self, target: int, deadline: float):
         # Not yet
@@ -1719,14 +1864,23 @@ def get_sha256(path: pathlib.Path, _bufsize=2**18) -> str:
 
 def extract_info(
     path: pathlib.Path, groups: list[Group], write_cache: bool = True
-) -> tuple[list[CircuitInfo], list[DisplayInfo]]:
-    import msgpack
+) -> tuple[SimulationInfo, list[GroupInfo], list[CircuitInfo], list[DisplayInfo]]:
 
+    # Simulation info
+    simulation_info = SimulationInfo.from_groups(groups)
+
+    # Group info
+    group_infos = [
+        group.extract_info()
+        for group in groups
+    ]
+
+    # Circuit info
     circuit_mapping: dict[int, CircuitInfo] = {}
     for i, group in enumerate(groups):
         for circuit in tqdm.tqdm(
             group.circuits,
-            desc=f"Extracting display info for group {i}",
+            desc=f"Extracting circuit info for group {i}",
             unit=" circuits",
             colour="green",
         ):
@@ -1734,7 +1888,9 @@ def extract_info(
             circuit_mapping[circuit.id] = circuit.extract_info(
                 group.cycle_start, group.cycle_length, ticks_to_event_indexes
             )
+    circuit_infos = [circuit_mapping[i] for i in range(len(circuit_mapping))]
 
+    # Display info
     display_mapping: dict[int, DisplayInfo] = {}
     for i, group in enumerate(groups):
         for display in tqdm.tqdm(
@@ -1745,17 +1901,23 @@ def extract_info(
         ):
             assert display.id is not None
             display_mapping[display.id] = display.extract_info()
-
-    circuit_infos = [circuit_mapping[i] for i in range(len(circuit_mapping))]
     display_infos = [display_mapping[i] for i in range(len(display_mapping))]
 
-    if write_cache:
+    # Write cache
+    if write_cache and msgpack is not None:
         packer = msgpack.Packer()
         with path.open("wb") as file:
-            file.write(packer.pack((len(circuit_infos), len(display_infos))))
+            file.write(packer.pack(simulation_info.dump()))
+            for group_info in tqdm.tqdm(
+                group_infos,
+                desc="Dumping group info",
+                unit=" groups",
+                colour="green",
+            ):
+                file.write(packer.pack(group_info.dump()))
             for circuit_info in tqdm.tqdm(
                 circuit_infos,
-                desc="Dumping display info",
+                desc="Dumping circuit info",
                 unit=" circuits",
                 colour="green",
             ):
@@ -1768,7 +1930,53 @@ def extract_info(
             ):
                 file.write(packer.pack(display_info.dump()))
 
-    return circuit_infos, display_infos
+    return simulation_info, group_infos, circuit_infos, display_infos
+
+
+def read_info(path: pathlib.Path, grid: Grid) -> tuple[SimulationInfo, list[GroupInfo], list[CircuitInfo], list[DisplayInfo]]:
+    import msgpack
+
+    with path.open("rb") as file:
+        unpacker = msgpack.Unpacker(file)
+        simulation_info = SimulationInfo.load(next(unpacker))
+        group_infos = [GroupInfo.load(next(unpacker)) for _ in tqdm.tqdm(
+            range(simulation_info.group_number),
+            desc="Loading group info",
+            unit=" groups",
+            colour="green",
+        )]
+        circuit_infos = [CircuitInfo.load(next(unpacker)) for _ in tqdm.tqdm(
+            range(simulation_info.circuit_number),
+            desc="Loading circuit info",
+            unit=" circuits",
+            colour="green",
+        )]
+        display_infos = [DisplayInfo.load(next(unpacker)) for _ in tqdm.tqdm(
+            range(simulation_info.display_number),
+            desc="Loading display info",
+            unit=" displays",
+            colour="green",
+        )]
+
+    # Patch grid
+    for circuit_info in tqdm.tqdm(
+        circuit_infos,
+        desc="Patching marbles",
+        unit=" marbles",
+        colour="green",
+    ):
+        x = circuit_info.x_positions[0]
+        y = circuit_info.y_positions[0]
+        directions = guess_directions(grid, Position(x, y))
+        # Check directions
+        if len(directions) == 2:
+            d1, d2 = sorted(directions, key=list(Direction).index)
+            grid[x][y] = DIRECTIONS_TO_TRACKS[(d1, d2)]
+        elif len(directions) == 4:
+            grid[x][y] = "╬"
+        else:
+            assert False
+    return simulation_info, group_infos, circuit_infos, display_infos
 
 
 def main(
@@ -1788,18 +1996,17 @@ def main(
         grid = create_grid(file)
 
     # Use cache
-    if check_cache and cache_path.exists():
+    if check_cache and cache_path.exists() and msgpack is not None:
         with open(cache_path, "rb") as file:
-            groups = pickle.load(file)
+            simulation_info, group_info, circuit_info, display_info = read_info(cache_path, grid)
 
     # Perform analysis
     else:
         marbles = extract_marbles(grid)
         circuits = build_circuits(grid, marbles)
         raw_groups = build_groups(circuits)
-        itertools.count(0)
         groups = analyze_groups(raw_groups)
-        circuit_info, display_info = extract_info(cache_path, groups)
+        simulation_info, group_info, circuit_info, display_info = extract_info(cache_path, groups)
 
     # Input/Output
     if input_stream is None and not sys.stdin.isatty():
@@ -1811,15 +2018,18 @@ def main(
     if output_stream is None:
         output_stream = io.BytesIO()
 
-    # Simulation
+    # Prepare
+    input_output = SimulationIO(input_stream, output_stream)
+    simulation = Simulation(simulation_info, group_info, input_output)
+    screen_info = ScreenInfo(grid, circuit_info, display_info)
+    display = ScreenDisplay(screen_info, speed, fps, simulation)
+
+    # Compile callbacks
+    simulation.compile()
+
+    # Run simulation
     try:
         with drawing_context():
-
-            # Run
-            input_output = SimulationIO(input_stream, output_stream)
-            simulation = Simulation(groups, input_output)
-            screen_info = ScreenInfo(grid, circuit_info, display_info)
-            display = ScreenDisplay(screen_info, speed, fps, simulation)
             display.run()
 
     # Ignore EOF
@@ -1845,7 +2055,7 @@ if __name__ == "__main__":
         namespace.file,
         namespace.speed,
         namespace.fps,
-        False,  # not namespace.no_cache,
+        not namespace.no_cache,
         namespace.input,
         namespace.output,
     )
