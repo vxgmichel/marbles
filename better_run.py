@@ -21,7 +21,7 @@ import sys
 import termios
 import time
 import tty
-from typing import IO, Callable, NamedTuple, TYPE_CHECKING, MutableSequence
+from typing import IO, Callable, Iterator, NamedTuple, TYPE_CHECKING, MutableSequence
 
 import tqdm
 
@@ -130,33 +130,35 @@ class Event:
         self.neighbor = neighbor
 
 
-@functools.total_ordering
-class DisplayInfo:
+class Display:
     def __init__(
-        self, positions: set[Position], char_off: str, char_on: str, initial_value: bool
+        self, positions: set[Position], off_char: str, on_char: str, initial_value: bool
     ):
         self.id: int | None = None
-        self.char_on = char_on
-        self.char_off = char_off
         self.initial_value = initial_value
-        self.on_chars = {(p, char_on) for p in positions}
-        self.off_chars = {(p, char_off) for p in positions}
+        self.positions = positions
+        self.off_char = off_char
+        self.on_char = on_char
 
         # X positioning
         self.min_x = min(p.x for p in positions)
         self.max_x = max(p.x for p in positions)
-        self.span = self.max_x - self.min_x + 1
-        self.max_span = 2 ** (self.span - 1).bit_length()
 
-    def __lt__(self, other):
-        if isinstance(other, DisplayInfo):
-            return self.min_x.__lt__(other.min_x)
-        if isinstance(other, int):
-            return self.min_x.__lt__(other)
-        raise NotImplementedError(other)
+    def extract_info(self):
+        x_positions: list[int] = [position.x for position in self.positions]
+        y_positions: list[int] = [position.y for position in self.positions]
+        assert self.id is not None
+        return DisplayInfo(
+            self.id,
+            self.min_x,
+            self.max_x,
+            x_positions,
+            y_positions,
+            self.off_char,
+            self.on_char,
+        )
 
 
-@functools.total_ordering
 class Circuit:
     def __init__(
         self,
@@ -165,7 +167,7 @@ class Circuit:
         positions: list[Position],
         events: list[Event],
         invertors: list[int],
-        displays: dict[Position, DisplayInfo],
+        displays: dict[Position, Display],
     ):
         self.id = circuit_id
         self.init_marble = marble
@@ -178,34 +180,55 @@ class Circuit:
         # X positioning
         self.min_x = min(p.x for p in self.positions)
         self.max_x = max(p.x for p in positions)
-        self.span = self.max_x - self.min_x + 1
-        self.max_span = 2 ** (self.span - 1).bit_length()
 
-    def __lt__(self, other):
-        if isinstance(other, Circuit):
-            return self.min_x.__lt__(other.min_x)
-        if isinstance(other, int):
-            return self.min_x.__lt__(other)
-        raise NotImplementedError(other)
+    def extract_info(
+        self,
+        cycle_start: int,
+        cycle_length: int,
+        ticks_to_event_indexes: list[tuple[int, int, bool]],
+    ):
+        position_indexes: list[int] = [event.index for event in self.events]
+        event_inverted: list[int] = [event.inverted for event in self.events]
+        invertors: list[int] = self.invertors
+        x_positions: list[int] = [position.x for position in self.positions]
+        y_positions: list[int] = [position.y for position in self.positions]
+        event_ticks: list[int] = [tick for tick, _, _ in ticks_to_event_indexes]
+        event_indexes: list[int] = [
+            event_index for _, event_index, _ in ticks_to_event_indexes
+        ]
+        event_waiting: list[int] = [waiting for _, _, waiting in ticks_to_event_indexes]
+        return CircuitInfo(
+            self.id,
+            cycle_start,
+            cycle_length,
+            self.min_x,
+            self.max_x,
+            position_indexes,
+            event_inverted,
+            invertors,
+            x_positions,
+            y_positions,
+            event_ticks,
+            event_indexes,
+            event_waiting,
+        )
 
 
 class Group:
     def __init__(
         self,
         circuits: list[Circuit],
-        sorted_circuits: dict[int, list[Circuit]],
+        displays: list[Display],
         cycle_start: int,
         cycle_length: int,
         ticks_to_event_indexes: dict[Circuit, list[tuple[int, int, bool]]],
-        sorted_displays: dict[int, list[DisplayInfo]],
         actions: list[tuple[int, Action]],
     ):
         self.circuits = circuits
+        self.displays = displays
         self.cycle_start = cycle_start
         self.cycle_length = cycle_length
         self.ticks_to_event_indexes = ticks_to_event_indexes
-        self.sorted_circuits = sorted_circuits
-        self.sorted_displays = sorted_displays
         self.actions = actions
 
 
@@ -579,11 +602,11 @@ def extract_marbles(grid: Grid) -> list[Marble]:
         return marbles
 
 
-def build_display_info(grid: list[dict[int, str]], position: Position) -> DisplayInfo:
+def build_display_info(grid: list[dict[int, str]], position: Position) -> Display:
     c = get_character(grid, position)
     if c in DISPLAYS:
         initial_value = c == DISPLAY_ON
-        return DisplayInfo({position}, DISPLAY_OFF, DISPLAY_ON, initial_value)
+        return Display({position}, DISPLAY_OFF, DISPLAY_ON, initial_value)
     assert c in GRID_ON + GRID_OFF
 
     initial_value = c == GRID_ON
@@ -600,7 +623,7 @@ def build_display_info(grid: list[dict[int, str]], position: Position) -> Displa
         positions.add(p)
         queue.extend(p.then(d) for d in Direction)
 
-    return DisplayInfo(positions, GRID_OFF, GRID_ON, initial_value)
+    return Display(positions, GRID_OFF, GRID_ON, initial_value)
 
 
 def build_circuit(
@@ -612,7 +635,7 @@ def build_circuit(
     positions: list[Position] = []
     invertors: list[int] = []
     events: list[Event] = [Event(EventType.START, 0, False)]
-    displays: dict[Position, DisplayInfo] = {}
+    displays: dict[Position, Display] = {}
     inverted: bool = False
 
     # Loop over steps
@@ -823,34 +846,29 @@ class TickInfo:
         return self.tick_exit - self.last_tick_info.tick_exit
 
 
-def analyze_group(group: list[Circuit], group_id: int) -> Group:
+def analyze_group(
+    group: list[Circuit], group_id: int, display_counter: Iterator[int]
+) -> Group:
     # Prepare structures
     counter = iter(itertools.count(0))
-    display_counter = iter(itertools.count(0))
     cycle_count: dict[int, int] = {}
     waiting_infos: set[tuple[int, int, int]] = set()
     tick_infos: dict[Circuit, TickInfo] = {}
-    sorted_circuits: dict[int, list[Circuit]] = {}
     waiting_circuits: dict[Position, tuple[Circuit, int]] = {}
     event_index_to_ticks: dict[Circuit, dict[int, TickInfo]] = {}
     tick_to_event_indexes: dict[Circuit, list[tuple[int, int, bool]]] = {}
     priority_queue: list[tuple[int, int, int, Circuit]] = []
-    sorted_displays: dict[int, list[DisplayInfo]] = {}
     actions: list[tuple[int, Action]] = []
+    displays: list[Display] = []
 
     # Prepare structures
     for circuit in group:
-        sorted_circuits.setdefault(circuit.max_span, []).append(circuit)
         event_index_to_ticks[circuit] = {}
         tick_to_event_indexes[circuit] = []
         priority_queue.append((0, 0, next(counter), circuit))
         for display in circuit.displays.values():
-            sorted_displays.setdefault(display.max_span, []).append(display)
             display.id = next(display_counter)
-
-    # Sort circuit using min_x
-    for lst in sorted_circuits.values():
-        lst.sort()
+            displays.append(display)
 
     # Helper
     def push_item(circuit: Circuit, event_index: int, current_tick: int):
@@ -951,11 +969,10 @@ def analyze_group(group: list[Circuit], group_id: int) -> Group:
                     start = current_tick - cycle
                     return Group(
                         group,
-                        sorted_circuits,
+                        displays,
                         start,
                         cycle,
                         tick_to_event_indexes,
-                        sorted_displays,
                         actions,
                     )
 
@@ -994,86 +1011,226 @@ def analyze_group(group: list[Circuit], group_id: int) -> Group:
             current_tick_to_event_indexes.append((current_tick, event_index, waiting))
 
 
-# Display info
+def analyze_groups(raw_groups: list[list[Circuit]]) -> list[Group]:
+    display_counter = itertools.count(0)
+    return [
+        analyze_group(group, i, display_counter) for i, group in enumerate(raw_groups)
+    ]
 
 
-@functools.lru_cache(maxsize=16)
-def get_circuits_in_window(group: Group, min_x: int, max_x: int) -> list[Circuit]:
-    result = []
-    # Get circuits in frame
-    for max_span, circuits in group.sorted_circuits.items():
-        index = bisect.bisect_left(circuits, min_x - max_span)
-        for circuit in itertools.islice(circuits, index, None, None):
-            if circuit.min_x > max_x:
-                break
-            if min_x <= circuit.max_x:
-                result.append(circuit)
-    return result
+# Screen info
 
 
-@functools.lru_cache(maxsize=16)
-def get_displays_in_window(group: Group, min_x: int, max_x: int) -> list[DisplayInfo]:
-    result = []
-    # Get circuits in frame
-    for max_span, displays in group.sorted_displays.items():
-        index = bisect.bisect_left(displays, min_x - max_span)
-        for display in itertools.islice(displays, index, None, None):
-            if display.min_x > max_x:
-                break
-            if min_x <= display.max_x:
-                result.append(display)
-    return result
+class CircuitInfo:
+    def __init__(
+        self,
+        id: int,
+        cycle_start: int,
+        cycle_length: int,
+        min_x: int,
+        max_x: int,
+        position_indexes: list[int],
+        event_inverted: list[int],
+        invertors: list[int],
+        x_positions: list[int],
+        y_positions: list[int],
+        event_ticks: list[int],
+        event_indexes: list[int],
+        event_waiting: list[int],
+    ):
+        self.id = id
+        self.cycle_start = cycle_start
+        self.cycle_length = cycle_length
+        self.min_x = min_x
+        self.max_x = max_x
+        self.position_indexes = position_indexes
+        self.event_inverted = event_inverted
+        self.invertors = invertors
+        self.x_positions = x_positions
+        self.y_positions = y_positions
+        self.event_ticks = event_ticks
+        self.event_indexes = event_indexes
+        self.event_waiting = event_waiting
+
+    @property
+    def span(self) -> int:
+        return self.max_x - self.min_x + 1
+
+    @property
+    def max_span(self) -> int:
+        return 2 ** (self.span - 1).bit_length()
+
+    def dump(self):
+        return [
+            self.id,
+            self.cycle_start,
+            self.cycle_length,
+            self.min_x,
+            self.max_x,
+            self.position_indexes,
+            self.event_inverted,
+            self.invertors,
+            self.x_positions,
+            self.y_positions,
+            self.event_ticks,
+            self.event_indexes,
+            self.event_waiting,
+        ]
+
+    @classmethod
+    def load(cls, args: list):
+        return cls(*args)
 
 
-def get_marbles_in_window(
-    group: Group, tick: int, values: MutableSequence[int], min_x: int, max_x: int
-) -> set[tuple[Position, str]]:
-    result = set()
+class DisplayInfo:
+    def __init__(
+        self,
+        id: int,
+        min_x: int,
+        max_x: int,
+        x_positions: list[int],
+        y_positions: list[int],
+        off_char: str,
+        on_char: str,
+    ):
+        self.id = id
+        self.min_x = min_x
+        self.max_x = max_x
+        self.x_positions = x_positions
+        self.y_positions = y_positions
+        self.off_char = off_char
+        self.on_char = on_char
 
-    # Normalize tick
-    if tick >= group.cycle_start:
-        tick = ((tick - group.cycle_start) % group.cycle_length) + group.cycle_start
+    @property
+    def span(self) -> int:
+        return self.max_x - self.min_x + 1
 
-    # Loop over circuits
-    for circuit in get_circuits_in_window(group, min_x, max_x):
+    @property
+    def max_span(self) -> int:
+        return 2 ** (self.span - 1).bit_length()
 
-        # Get event info
-        ticks_to_event_indexes = group.ticks_to_event_indexes[circuit]
-        index = bisect.bisect(ticks_to_event_indexes, (tick, float("inf"))) - 1
-        previous_tick, event_index, waiting = ticks_to_event_indexes[index]
-        event = circuit.events[event_index]
+    def dump(self):
+        return [
+            self.id,
+            self.min_x,
+            self.max_x,
+            self.x_positions,
+            self.y_positions,
+            self.off_char,
+            self.on_char,
+        ]
 
-        # Marble is waiting
-        if waiting:
-            position = circuit.positions[event.index]
-            value = values[circuit.id] ^ event.inverted
-
-        # Marble is running
-        else:
-            position_index = event.index
-            i_start = bisect.bisect_left(circuit.invertors, position_index)
-            position_index += tick - previous_tick
-            i_stop = bisect.bisect_left(circuit.invertors, position_index)
-            position_index %= circuit.length
-            position = circuit.positions[position_index]
-            invert = (i_stop - i_start) % 2
-            value = values[circuit.id] ^ invert
-
-        # Add marble to the result
-        char = MARBLE_UPPER if value else MARBLE_LOWER
-        result.add((position, char))
-
-    return result
+    @classmethod
+    def load(cls, args: list):
+        return cls(*args)
 
 
-def get_display_values_in_window(
-    group: Group, tick: int, values: MutableSequence[int], min_x: int, max_x: int
-) -> set[tuple[Position, str]]:
-    result = set()
-    for display in get_displays_in_window(group, min_x, max_x):
-        assert display.id is not None
-        result |= display.on_chars if values[display.id] else display.off_chars
-    return result
+class ScreenInfo:
+    def __init__(
+        self, grid: Grid, circuits: list[CircuitInfo], displays: list[DisplayInfo]
+    ):
+        self.grid = grid
+        self.sorted_circuits: dict[int, list[tuple[int, int, CircuitInfo]]] = {}
+        self.sorted_displays: dict[int, list[tuple[int, int, DisplayInfo]]] = {}
+
+        for circuit in circuits:
+            self.sorted_circuits.setdefault(circuit.max_span, [])
+            circuit_item = (circuit.min_x, circuit.id, circuit)
+            self.sorted_circuits[circuit.max_span].append(circuit_item)
+
+        for display in displays:
+            self.sorted_displays.setdefault(display.max_span, [])
+            display_item = (display.min_x, display.id, display)
+            self.sorted_displays[display.max_span].append(display_item)
+
+        for circuit_value in self.sorted_circuits.values():
+            circuit_value.sort()
+        for display_value in self.sorted_displays.values():
+            display_value.sort()
+
+    @functools.lru_cache(maxsize=16)
+    def get_circuits_in_window(self, min_x: int, max_x: int) -> list[CircuitInfo]:
+        result = []
+        # Get circuits in frame
+        for max_span, circuit_ids in self.sorted_circuits.items():
+            index = bisect.bisect_left(circuit_ids, (min_x - max_span, -1, None))
+            for _, _, circuit in itertools.islice(circuit_ids, index, None, None):
+                if circuit.min_x > max_x:
+                    break
+                if min_x <= circuit.max_x:
+                    result.append(circuit)
+        return result
+
+    @functools.lru_cache(maxsize=16)
+    def get_displays_in_window(self, min_x: int, max_x: int) -> list[DisplayInfo]:
+        result = []
+        # Get circuits in frame
+        for max_span, displays in self.sorted_displays.items():
+            index = bisect.bisect_left(displays, (min_x - max_span, -1, None))
+            for _, _, display in itertools.islice(displays, index, None, None):
+                if display.min_x > max_x:
+                    break
+                if min_x <= display.max_x:
+                    result.append(display)
+        return result
+
+    def get_marbles_in_window(
+        self, tick: int, values: MutableSequence[int], min_x: int, max_x: int
+    ) -> set[tuple[Position, str]]:
+        result = set()
+
+        # Loop over circuits
+        for circuit in self.get_circuits_in_window(min_x, max_x):
+
+            # Normalize tick
+            if tick >= circuit.cycle_start:
+                tick = (
+                    (tick - circuit.cycle_start) % circuit.cycle_length
+                ) + circuit.cycle_start
+
+            # Get event info
+            index = bisect.bisect(circuit.event_ticks, tick) - 1
+            previous_tick = circuit.event_ticks[index]
+            event_index = circuit.event_indexes[index]
+            waiting = circuit.event_waiting[index]
+            position_index = circuit.position_indexes[event_index]
+
+            # Marble is waiting
+            if waiting:
+                inverted = circuit.event_inverted[event_index]
+                position_x = circuit.x_positions[position_index]
+                position_y = circuit.y_positions[position_index]
+                position = Position(position_x, position_y)
+                value = values[circuit.id] ^ inverted
+
+            # Marble is running
+            else:
+                i_start = bisect.bisect_left(circuit.invertors, position_index)
+                position_index += tick - previous_tick
+                i_stop = bisect.bisect_left(circuit.invertors, position_index)
+                position_index %= len(circuit.x_positions)
+                position_x = circuit.x_positions[position_index]
+                position_y = circuit.y_positions[position_index]
+                position = Position(position_x, position_y)
+                invert = (i_stop - i_start) % 2
+                value = values[circuit.id] ^ invert
+
+            # Add marble to the result
+            char = MARBLE_UPPER if value else MARBLE_LOWER
+            result.add((position, char))
+
+        return result
+
+    def get_display_values_in_window(
+        self, tick: int, values: MutableSequence[int], min_x: int, max_x: int
+    ) -> set[tuple[Position, str]]:
+        result = set()
+        for display in self.get_displays_in_window(min_x, max_x):
+            char = display.on_char if values[display.id] else display.off_char
+            for x, y in zip(display.x_positions, display.y_positions):
+                position = Position(x, y)
+                result.add((position, char))
+        return result
 
 
 # Simulation
@@ -1210,16 +1367,15 @@ class Simulation:
             len(group.circuits) for group in groups
         )
         self.display_values = array.array("B", [0]) * sum(
-            sum(map(len, group.sorted_displays.values())) for group in groups
+            len(group.displays) for group in groups
         )
         for group in groups:
             for circuit in group.circuits:
                 self.values[circuit.id] = circuit.init_marble.upper
                 self.values[circuit.id] ^= circuit.events[0].inverted
-            for displays in group.sorted_displays.values():
-                for display in displays:
-                    assert display.id is not None
-                    self.display_values[display.id] = display.initial_value
+            for display in group.displays:
+                assert display.id is not None
+                self.display_values[display.id] = display.initial_value
 
         # Create callbacks
         self.callbacks = [GroupCallbacks(self, group) for group in groups]
@@ -1325,9 +1481,11 @@ class SimulationIO:
 
 
 class ScreenDisplay:
-    def __init__(self, grid: Grid, speed: float, fps: float, simulation: Simulation):
+    def __init__(
+        self, screen_info: ScreenInfo, speed: float, fps: float, simulation: Simulation
+    ):
         self.fps = fps
-        self.grid = grid
+        self.screen_info = screen_info
         self.speed = speed
         self.io = simulation.io
         self.simulation = simulation
@@ -1473,20 +1631,12 @@ class ScreenDisplay:
         # Get current window
         min_x = -self.x_offset
         max_x = min_x + self.termsize.lines - 2
-        marbles = {
-            item
-            for group in self.simulation.groups
-            for item in get_marbles_in_window(
-                group, tick, self.simulation.values, min_x, max_x
-            )
-        }
-        displays = {
-            item
-            for group in self.simulation.groups
-            for item in get_display_values_in_window(
-                group, tick, self.simulation.display_values, min_x, max_x
-            )
-        }
+        marbles = self.screen_info.get_marbles_in_window(
+            tick, self.simulation.values, min_x, max_x
+        )
+        displays = self.screen_info.get_display_values_in_window(
+            tick, self.simulation.display_values, min_x, max_x
+        )
         # Remove marbles from ON grid and OFF grid from marbles
         marbles -= {
             (position, marble)
@@ -1527,9 +1677,9 @@ class ScreenDisplay:
         result = [f"\033[{i+1};{j+1}H\033[1J"]
         for i in range(self.termsize.lines):
             i -= self.x_offset
-            if not 0 <= i < len(self.grid):
+            if not 0 <= i < len(self.screen_info.grid):
                 continue
-            row = self.grid[i]
+            row = self.screen_info.grid[i]
             for j, char in row.items():
                 result.append(self.draw_char(i, j, char))
         return "".join(result)
@@ -1537,7 +1687,7 @@ class ScreenDisplay:
     def clear_chars(self, chars: set[tuple[Position, str]]) -> str:
         result = []
         for position, _ in chars:
-            char = get_character(self.grid, position)
+            char = get_character(self.screen_info.grid, position)
             result.append(self.draw_char(position.x, position.y, char))
         return "".join(result)
 
@@ -1567,6 +1717,60 @@ def get_sha256(path: pathlib.Path, _bufsize=2**18) -> str:
     return digest.hexdigest()
 
 
+def extract_info(
+    path: pathlib.Path, groups: list[Group], write_cache: bool = True
+) -> tuple[list[CircuitInfo], list[DisplayInfo]]:
+    import msgpack
+
+    circuit_mapping: dict[int, CircuitInfo] = {}
+    for i, group in enumerate(groups):
+        for circuit in tqdm.tqdm(
+            group.circuits,
+            desc=f"Extracting display info for group {i}",
+            unit=" circuits",
+            colour="green",
+        ):
+            ticks_to_event_indexes = group.ticks_to_event_indexes[circuit]
+            circuit_mapping[circuit.id] = circuit.extract_info(
+                group.cycle_start, group.cycle_length, ticks_to_event_indexes
+            )
+
+    display_mapping: dict[int, DisplayInfo] = {}
+    for i, group in enumerate(groups):
+        for display in tqdm.tqdm(
+            group.displays,
+            desc=f"Extracting display info for group {i}",
+            unit=" displays",
+            colour="green",
+        ):
+            assert display.id is not None
+            display_mapping[display.id] = display.extract_info()
+
+    circuit_infos = [circuit_mapping[i] for i in range(len(circuit_mapping))]
+    display_infos = [display_mapping[i] for i in range(len(display_mapping))]
+
+    if write_cache:
+        packer = msgpack.Packer()
+        with path.open("wb") as file:
+            file.write(packer.pack((len(circuit_infos), len(display_infos))))
+            for circuit_info in tqdm.tqdm(
+                circuit_infos,
+                desc="Dumping display info",
+                unit=" circuits",
+                colour="green",
+            ):
+                file.write(packer.pack(circuit_info.dump()))
+            for display_info in tqdm.tqdm(
+                display_infos,
+                desc="Dumping display info",
+                unit=" displays",
+                colour="green",
+            ):
+                file.write(packer.pack(display_info.dump()))
+
+    return circuit_infos, display_infos
+
+
 def main(
     path: pathlib.Path,
     speed: float,
@@ -1582,7 +1786,6 @@ def main(
     # Load grid
     with open(path) as file:
         grid = create_grid(file)
-        marbles = extract_marbles(grid)
 
     # Use cache
     if check_cache and cache_path.exists():
@@ -1591,11 +1794,12 @@ def main(
 
     # Perform analysis
     else:
+        marbles = extract_marbles(grid)
         circuits = build_circuits(grid, marbles)
         raw_groups = build_groups(circuits)
-        groups = [analyze_group(group, i) for i, group in enumerate(raw_groups)]
-        # with open(cache_path, "wb") as file:
-        #     pickle.dump(groups, file)
+        itertools.count(0)
+        groups = analyze_groups(raw_groups)
+        circuit_info, display_info = extract_info(cache_path, groups)
 
     # Input/Output
     if input_stream is None and not sys.stdin.isatty():
@@ -1614,7 +1818,8 @@ def main(
             # Run
             input_output = SimulationIO(input_stream, output_stream)
             simulation = Simulation(groups, input_output)
-            display = ScreenDisplay(grid, speed, fps, simulation)
+            screen_info = ScreenInfo(grid, circuit_info, display_info)
+            display = ScreenDisplay(screen_info, speed, fps, simulation)
             display.run()
 
     # Ignore EOF
