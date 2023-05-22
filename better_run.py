@@ -11,7 +11,6 @@ import math
 import os
 import random
 import pathlib
-import pickle
 import select
 import string
 import argparse
@@ -21,9 +20,21 @@ import sys
 import termios
 import time
 import tty
-from typing import IO, Callable, Iterator, NamedTuple, TYPE_CHECKING, MutableSequence
+from typing import (
+    IO,
+    Callable,
+    Iterator,
+    Iterable,
+    NamedTuple,
+    TYPE_CHECKING,
+    MutableSequence,
+    TypeVar,
+)
 
-import tqdm
+try:
+    import tqdm
+except ImportError:
+    tqdm = None
 
 try:
     import msgpack
@@ -40,6 +51,32 @@ except AttributeError:
         return abs(a * b) // math.gcd(a, b)
 
     math.lcm = lambda *args: functools.reduce(lcm, args)
+
+
+# Progress bar
+
+QUIET = False
+
+if TYPE_CHECKING:
+    T = TypeVar("T")
+
+
+@contextlib.contextmanager
+def progress_context(**kwargs):
+    class Dummy:
+        def update(self, _):
+            pass
+
+    if tqdm is None or QUIET:
+        yield Dummy()
+        return
+    yield tqdm.tqdm(**kwargs)
+
+
+def show_progress(arg: Iterable[T], **kwargs) -> Iterable[T]:
+    if tqdm is None or QUIET:
+        return arg
+    return tqdm.tqdm(arg, **kwargs)
 
 
 # Types
@@ -173,6 +210,7 @@ class Circuit:
         events: list[Event],
         invertors: list[int],
         displays: dict[Position, Display],
+        replaced_char: str,
     ):
         self.id = circuit_id
         self.init_marble = marble
@@ -181,6 +219,7 @@ class Circuit:
         self.length = len(self.positions)
         self.displays = displays
         self.invertors = invertors
+        self.replaced_char = replaced_char
 
         # X positioning
         self.min_x = min(p.x for p in self.positions)
@@ -208,6 +247,7 @@ class Circuit:
             cycle_length,
             self.min_x,
             self.max_x,
+            self.replaced_char,
             position_indexes,
             event_inverted,
             invertors,
@@ -346,7 +386,9 @@ class Action:
                     ActionType.AND: type(self).make_and_callback,
                 }
             )
-        return cache[self.action_type](self, values, display_values, read_bit, write_bit)
+        return cache[self.action_type](
+            self, values, display_values, read_bit, write_bit
+        )
 
     def make_start_callback(
         self,
@@ -609,12 +651,12 @@ def guess_directions(grid: Grid, p: Position) -> set[Direction]:
 def create_grid(file: io.TextIOBase) -> Grid:
     return [
         {i: char for i, char in enumerate(line) if char not in string.whitespace}
-        for line in tqdm.tqdm(file, desc="Creating grid", unit=" lines")
+        for line in show_progress(file, desc="Creating grid", unit=" lines")
     ]
 
 
 def extract_marbles(grid: Grid) -> list[Marble]:
-    with tqdm.tqdm(desc="Extracting marbles", unit=" marbles") as progress_bar:
+    with progress_context(desc="Extracting marbles", unit=" marbles") as progress_bar:
         marbles = []
 
         # Loop over rows
@@ -778,7 +820,10 @@ def build_circuit(
         current_d = new_d
 
     events[0].inverted = inverted
-    return Circuit(circuit_id, marble, positions, events, invertors, displays)
+    replaced_char = get_character(grid, marble.p)
+    return Circuit(
+        circuit_id, marble, positions, events, invertors, displays, replaced_char
+    )
 
 
 def build_circuits(grid: Grid, marbles: list[Marble]) -> list[Circuit]:
@@ -786,7 +831,7 @@ def build_circuits(grid: Grid, marbles: list[Marble]) -> list[Circuit]:
     return [
         build_circuit(grid, marble, circuit_id)
         for circuit_id, marble in enumerate(
-            tqdm.tqdm(
+            show_progress(
                 marbles, desc="Building circuits", unit=" circuit", colour="green"
             )
         )
@@ -796,7 +841,7 @@ def build_circuits(grid: Grid, marbles: list[Marble]) -> list[Circuit]:
 def build_groups(circuits: list[Circuit]) -> list[list[Circuit]]:
     # Build a mapping
     mapping: dict[Position, Circuit] = {}
-    for circuit in tqdm.tqdm(
+    for circuit in show_progress(
         circuits,
         desc="Prepare mapping for group detection",
         unit=" circuit",
@@ -809,7 +854,7 @@ def build_groups(circuits: list[Circuit]) -> list[list[Circuit]]:
             mapping[position] = circuit
 
     # Prepare groups
-    with tqdm.tqdm(desc="Detecting groups", unit=" group") as progress_bar:
+    with progress_context(desc="Detecting groups", unit=" group") as progress_bar:
         groups = []
         unseen = set(circuits)
 
@@ -932,7 +977,9 @@ def analyze_group(
         heapq.heappush(priority_queue, item)
 
     # Loop over events in queue
-    with tqdm.tqdm(desc=f"Analyzing group {group_id}", unit=" tick") as progress_bar:
+    with progress_context(
+        desc=f"Analyzing group {group_id}", unit=" tick"
+    ) as progress_bar:
         while True:
 
             # Deadlock detection
@@ -1073,7 +1120,9 @@ def analyze_groups(raw_groups: list[list[Circuit]]) -> list[Group]:
 
 
 class GroupInfo:
-    def __init__(self, cycle_start: int, cycle_length, actions: list[tuple[int, Action]]):
+    def __init__(
+        self, cycle_start: int, cycle_length, actions: list[tuple[int, Action]]
+    ):
         self.cycle_start = cycle_start
         self.cycle_length = cycle_length
         self.actions = actions
@@ -1136,12 +1185,8 @@ class SimulationInfo:
         cycle_start = max(group.cycle_start for group in groups)
 
         # Initialize values
-        marble_values = [0] * sum(
-            len(group.circuits) for group in groups
-        )
-        display_values = [0] * sum(
-            len(group.displays) for group in groups
-        )
+        marble_values = [0] * sum(len(group.circuits) for group in groups)
+        display_values = [0] * sum(len(group.displays) for group in groups)
         for group in groups:
             for circuit in group.circuits:
                 marble_values[circuit.id] = circuit.init_marble.upper
@@ -1161,6 +1206,7 @@ class SimulationInfo:
 
 # Screen info
 
+
 class CircuitInfo:
     def __init__(
         self,
@@ -1169,6 +1215,7 @@ class CircuitInfo:
         cycle_length: int,
         min_x: int,
         max_x: int,
+        replaced_char: str,
         position_indexes: list[int],
         event_inverted: list[int],
         invertors: list[int],
@@ -1183,6 +1230,7 @@ class CircuitInfo:
         self.cycle_length = cycle_length
         self.min_x = min_x
         self.max_x = max_x
+        self.replaced_char = replaced_char
         self.position_indexes = position_indexes
         self.event_inverted = event_inverted
         self.invertors = invertors
@@ -1207,6 +1255,7 @@ class CircuitInfo:
             self.cycle_length,
             self.min_x,
             self.max_x,
+            self.replaced_char,
             self.position_indexes,
             self.event_inverted,
             self.invertors,
@@ -1324,12 +1373,14 @@ class ScreenInfo:
 
             # Normalize tick
             if tick >= circuit.cycle_start:
-                tick = (
+                circuit_tick = (
                     (tick - circuit.cycle_start) % circuit.cycle_length
                 ) + circuit.cycle_start
+            else:
+                circuit_tick = tick
 
             # Get event info
-            index = bisect.bisect(circuit.event_ticks, tick) - 1
+            index = bisect.bisect(circuit.event_ticks, circuit_tick) - 1
             previous_tick = circuit.event_ticks[index]
             event_index = circuit.event_indexes[index]
             waiting = circuit.event_waiting[index]
@@ -1346,8 +1397,8 @@ class ScreenInfo:
             # Marble is running
             else:
                 i_start = bisect.bisect_left(circuit.invertors, position_index)
-                position_index += tick - previous_tick
-                i_stop = bisect.bisect_left(circuit.invertors, position_index)
+                position_index += circuit_tick - previous_tick
+                i_stop = bisect.bisect_left(circuit.invertors, position_index + 1)
                 position_index %= len(circuit.x_positions)
                 position_x = circuit.x_positions[position_index]
                 position_y = circuit.y_positions[position_index]
@@ -1385,21 +1436,23 @@ class GroupCallbacks:
         self.cycle_start = group_info.cycle_start
         self.cycle_length = group_info.cycle_length
 
-        self.init_callbacks = []
-        self.cycle_callbacks = []
         self.group_info = group_info
+        self.init_callbacks: list[tuple[int, int, Callable[[], None]]] = []
+        self.cycle_callbacks: list[tuple[int, int, Callable[[], None]]] = []
 
     def compile(self, simulation: Simulation):
         self.init_callbacks = []
         self.cycle_callbacks = []
 
         # Make callbacks
-        for i, (tick, action) in enumerate(tqdm.tqdm(
-            self.group_info.actions,
-            desc=f"Compiling callbacks for group {self.group_id}",
-            unit=" callbacks",
-            colour="green",
-        )):
+        for i, (tick, action) in enumerate(
+            show_progress(
+                self.group_info.actions,
+                desc=f"Compiling callbacks for group {self.group_id}",
+                unit=" callbacks",
+                colour="green",
+            )
+        ):
             callback = action.make_callback(
                 simulation.values,
                 simulation.display_values,
@@ -1502,7 +1555,12 @@ class GroupCallbacks:
 
 
 class Simulation:
-    def __init__(self, simulation_info: SimulationInfo, group_infos: list[GroupInfo], io: SimulationIO):
+    def __init__(
+        self,
+        simulation_info: SimulationInfo,
+        group_infos: list[GroupInfo],
+        io: SimulationIO,
+    ):
         self.simulation_info = simulation_info
         self.group_infos = group_infos
         self.io = io
@@ -1519,11 +1577,17 @@ class Simulation:
         self.display_values = array.array("B", simulation_info.initial_display_values)
 
         # Create callbacks
-        self.callbacks = [GroupCallbacks(i, group_info) for i, group_info in enumerate(group_infos)]
+        self.callbacks = [
+            GroupCallbacks(i, group_info) for i, group_info in enumerate(group_infos)
+        ]
 
     def compile(self):
         for callback in self.callbacks:
             callback.compile(self)
+
+    def run(self):
+        for i in itertools.count():
+            self.run_until(self.cycle_start + self.cycle_length * i, float("inf"))
 
     def run_until(self, target: int, deadline: float):
         # Not yet
@@ -1577,14 +1641,17 @@ def drawing_context():
     print("\033[?1049h", end="", flush=True)
     # Hide cursor
     print("\033[?25l", end="", flush=True)
+    # Get stdin info
     fd = sys.stdin.fileno()
-    info = termios.tcgetattr(fd)
+    info = termios.tcgetattr(fd) if sys.stdin.isatty() else None
     try:
-        tty.setraw(fd)
+        if info is not None:
+            tty.setraw(fd)
         yield
     finally:
         # Restore
-        termios.tcsetattr(fd, termios.TCSAFLUSH, info)
+        if info is not None:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, info)
         # Disable alternative buffer
         print("\033[?1049h", end="", flush=True)
         # Show cursor
@@ -1666,10 +1733,6 @@ class ScreenDisplay:
                 start_simulation_tick = self.simulation.current_tick
             step1 = time.time() - previous_time
 
-            # Show simulation
-            self.show()
-            step2 = time.time() - previous_time - step1
-
             # Run simulation
             delta_frame = self.frame - self.start_frame
             new_simulation_tick = start_simulation_tick + int(
@@ -1677,6 +1740,10 @@ class ScreenDisplay:
             )
             deadline = self.start_time + delta_frame / self.fps
             self.simulation.run_until(new_simulation_tick, deadline)
+            step2 = time.time() - previous_time - step1
+
+            # Show simulation
+            self.show()
             step3 = time.time() - previous_time - step1 - step2
 
             # Wait for the next tick
@@ -1710,17 +1777,21 @@ class ScreenDisplay:
         cycle_count: int,
         cycle_length: int,
     ):
-        info = f"FPS: {fps:7.2f} "
-        info += f"  | Tick per frame: {speed_per_frame:8d}"
-        info += f"  | Speed: {int(speed_per_frame * fps):8d}"
-        info += f"  | Frame: {self.frame: 8d}"
         sum_steps = sum(steps, 0)
         stdin, show, run, sleep = [int(round(s * 100 / sum_steps)) for s in steps]
-        info += f"  | Display: {show:3d} % CPU"
-        info += f"  | Simulation: {run:3d} % CPU"
-        info += f"  | Current cycle: {cycle_count:4d} ({cycle_length:5d} ticks)"
-        info += f"  | Cycle speed: {speed_per_frame * fps / self.simulation.cycle_length:4.1f}"
-        info += f"  | Tick: {self.simulation.current_tick:8d}"
+        info = "  | ".join(
+            [
+                f"Tick: {self.simulation.current_tick:8d}",
+                f"Cycle: {cycle_count:4d} ({cycle_length:5d} ticks)",
+                f"Frame: {self.frame: 8d}",
+                f"FPS: {fps:7.2f} ",
+                f"Tick per frame: {speed_per_frame:8d}",
+                f"Cycle speed: {speed_per_frame * fps / self.simulation.cycle_length:4.1f}",
+                f"Speed: {int(speed_per_frame * fps):8d}",
+                f"Display: {show:3d} % CPU",
+                f"Simulation: {run:3d} % CPU",
+            ]
+        )
         i = self.termsize.lines - 2
         j = 0
         string = f"\033[{i+1};{j+1}H"
@@ -1870,15 +1941,12 @@ def extract_info(
     simulation_info = SimulationInfo.from_groups(groups)
 
     # Group info
-    group_infos = [
-        group.extract_info()
-        for group in groups
-    ]
+    group_infos = [group.extract_info() for group in groups]
 
     # Circuit info
     circuit_mapping: dict[int, CircuitInfo] = {}
     for i, group in enumerate(groups):
-        for circuit in tqdm.tqdm(
+        for circuit in show_progress(
             group.circuits,
             desc=f"Extracting circuit info for group {i}",
             unit=" circuits",
@@ -1893,7 +1961,7 @@ def extract_info(
     # Display info
     display_mapping: dict[int, DisplayInfo] = {}
     for i, group in enumerate(groups):
-        for display in tqdm.tqdm(
+        for display in show_progress(
             group.displays,
             desc=f"Extracting display info for group {i}",
             unit=" displays",
@@ -1908,21 +1976,21 @@ def extract_info(
         packer = msgpack.Packer()
         with path.open("wb") as file:
             file.write(packer.pack(simulation_info.dump()))
-            for group_info in tqdm.tqdm(
+            for group_info in show_progress(
                 group_infos,
                 desc="Dumping group info",
                 unit=" groups",
                 colour="green",
             ):
                 file.write(packer.pack(group_info.dump()))
-            for circuit_info in tqdm.tqdm(
+            for circuit_info in show_progress(
                 circuit_infos,
                 desc="Dumping circuit info",
                 unit=" circuits",
                 colour="green",
             ):
                 file.write(packer.pack(circuit_info.dump()))
-            for display_info in tqdm.tqdm(
+            for display_info in show_progress(
                 display_infos,
                 desc="Dumping display info",
                 unit=" displays",
@@ -1933,33 +2001,44 @@ def extract_info(
     return simulation_info, group_infos, circuit_infos, display_infos
 
 
-def read_info(path: pathlib.Path, grid: Grid) -> tuple[SimulationInfo, list[GroupInfo], list[CircuitInfo], list[DisplayInfo]]:
+def read_info(
+    path: pathlib.Path, grid: Grid
+) -> tuple[SimulationInfo, list[GroupInfo], list[CircuitInfo], list[DisplayInfo]]:
     import msgpack
 
     with path.open("rb") as file:
         unpacker = msgpack.Unpacker(file)
         simulation_info = SimulationInfo.load(next(unpacker))
-        group_infos = [GroupInfo.load(next(unpacker)) for _ in tqdm.tqdm(
-            range(simulation_info.group_number),
-            desc="Loading group info",
-            unit=" groups",
-            colour="green",
-        )]
-        circuit_infos = [CircuitInfo.load(next(unpacker)) for _ in tqdm.tqdm(
-            range(simulation_info.circuit_number),
-            desc="Loading circuit info",
-            unit=" circuits",
-            colour="green",
-        )]
-        display_infos = [DisplayInfo.load(next(unpacker)) for _ in tqdm.tqdm(
-            range(simulation_info.display_number),
-            desc="Loading display info",
-            unit=" displays",
-            colour="green",
-        )]
+        group_infos = [
+            GroupInfo.load(next(unpacker))
+            for _ in show_progress(
+                range(simulation_info.group_number),
+                desc="Loading group info",
+                unit=" groups",
+                colour="green",
+            )
+        ]
+        circuit_infos = [
+            CircuitInfo.load(next(unpacker))
+            for _ in show_progress(
+                range(simulation_info.circuit_number),
+                desc="Loading circuit info",
+                unit=" circuits",
+                colour="green",
+            )
+        ]
+        display_infos = [
+            DisplayInfo.load(next(unpacker))
+            for _ in show_progress(
+                range(simulation_info.display_number),
+                desc="Loading display info",
+                unit=" displays",
+                colour="green",
+            )
+        ]
 
     # Patch grid
-    for circuit_info in tqdm.tqdm(
+    for circuit_info in show_progress(
         circuit_infos,
         desc="Patching marbles",
         unit=" marbles",
@@ -1967,15 +2046,7 @@ def read_info(path: pathlib.Path, grid: Grid) -> tuple[SimulationInfo, list[Grou
     ):
         x = circuit_info.x_positions[0]
         y = circuit_info.y_positions[0]
-        directions = guess_directions(grid, Position(x, y))
-        # Check directions
-        if len(directions) == 2:
-            d1, d2 = sorted(directions, key=list(Direction).index)
-            grid[x][y] = DIRECTIONS_TO_TRACKS[(d1, d2)]
-        elif len(directions) == 4:
-            grid[x][y] = "╬"
-        else:
-            assert False
+        grid[x][y] = circuit_info.replaced_char
     return simulation_info, group_infos, circuit_infos, display_infos
 
 
@@ -1983,7 +2054,8 @@ def main(
     path: pathlib.Path,
     speed: float,
     fps: float,
-    check_cache: bool,
+    check_cache: bool = True,
+    show_simulation: bool = True,
     input_stream: IO[bytes] | None = None,
     output_stream: IO[bytes] | None = None,
 ):
@@ -1998,7 +2070,9 @@ def main(
     # Use cache
     if check_cache and cache_path.exists() and msgpack is not None:
         with open(cache_path, "rb") as file:
-            simulation_info, group_info, circuit_info, display_info = read_info(cache_path, grid)
+            simulation_info, group_info, circuit_info, display_info = read_info(
+                cache_path, grid
+            )
 
     # Perform analysis
     else:
@@ -2006,11 +2080,17 @@ def main(
         circuits = build_circuits(grid, marbles)
         raw_groups = build_groups(circuits)
         groups = analyze_groups(raw_groups)
-        simulation_info, group_info, circuit_info, display_info = extract_info(cache_path, groups)
+        simulation_info, group_info, circuit_info, display_info = extract_info(
+            cache_path, groups
+        )
 
     # Input/Output
+    if not sys.stdout.isatty():
+        show_simulation = False
     if input_stream is None and not sys.stdin.isatty():
         input_stream = sys.stdin.buffer
+    if output_stream is None and not sys.stdout.isatty():
+        output_stream = sys.stdout.buffer
     if output_stream is None and not sys.stderr.isatty():
         output_stream = sys.stderr.buffer
     if input_stream is None:
@@ -2018,17 +2098,22 @@ def main(
     if output_stream is None:
         output_stream = io.BytesIO()
 
-    # Prepare
+    # Prepare simulation
     input_output = SimulationIO(input_stream, output_stream)
     simulation = Simulation(simulation_info, group_info, input_output)
-    screen_info = ScreenInfo(grid, circuit_info, display_info)
-    display = ScreenDisplay(screen_info, speed, fps, simulation)
-
-    # Compile callbacks
     simulation.compile()
 
     # Run simulation
     try:
+
+        # Run without display
+        if not show_simulation:
+            simulation.run()
+            return
+
+        # Run with display
+        screen_info = ScreenInfo(grid, circuit_info, display_info)
+        display = ScreenDisplay(screen_info, speed, fps, simulation)
         with drawing_context():
             display.run()
 
@@ -2039,7 +2124,6 @@ def main(
     finally:
         if isinstance(output_stream, io.BytesIO):
             sys.stdout.buffer.write(output_stream.getvalue())
-        print()
 
 
 if __name__ == "__main__":
@@ -2049,13 +2133,17 @@ if __name__ == "__main__":
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--input", type=argparse.FileType("rb"), default=None)
     parser.add_argument("--output", type=argparse.FileType("wb"), default=None)
-    parser.add_argument("--no-cache", action="store_true", default=False)
+    parser.add_argument("--ignore-cache", action="store_true", default=False)
+    parser.add_argument("--no-display", action="store_true", default=False)
+    parser.add_argument("--quiet", action="store_true", default=False)
     namespace = parser.parse_args()
+    QUIET = namespace.quiet
     main(
         namespace.file,
         namespace.speed,
         namespace.fps,
-        not namespace.no_cache,
+        not namespace.ignore_cache,
+        not namespace.no_display,
         namespace.input,
         namespace.output,
     )
