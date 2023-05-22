@@ -64,19 +64,27 @@ if TYPE_CHECKING:
 @contextlib.contextmanager
 def progress_context(**kwargs):
     class Dummy:
+        n = 0
+
         def update(self, _):
+            pass
+
+        def refresh(self):
+            pass
+
+        def close(self):
             pass
 
     if tqdm is None or QUIET:
         yield Dummy()
         return
-    yield tqdm.tqdm(**kwargs)
+    yield tqdm.tqdm(colour="green", **kwargs)
 
 
 def show_progress(arg: Iterable[T], **kwargs) -> Iterable[T]:
     if tqdm is None or QUIET:
         return arg
-    return tqdm.tqdm(arg, **kwargs)
+    return tqdm.tqdm(arg, colour="green", **kwargs)
 
 
 # Types
@@ -648,11 +656,12 @@ def guess_directions(grid: Grid, p: Position) -> set[Direction]:
 # Analysis
 
 
-def create_grid(file: io.TextIOBase) -> Grid:
-    return [
-        {i: char for i, char in enumerate(line) if char not in string.whitespace}
-        for line in show_progress(file, desc="Creating grid", unit=" lines")
-    ]
+def create_grid(path: pathlib.Path) -> Grid:
+    with open(path) as file:
+        return [
+            {i: char for i, char in enumerate(line) if char not in string.whitespace}
+            for line in show_progress(file, desc="Creating grid", unit=" lines")
+        ]
 
 
 def extract_marbles(grid: Grid) -> list[Marble]:
@@ -831,9 +840,7 @@ def build_circuits(grid: Grid, marbles: list[Marble]) -> list[Circuit]:
     return [
         build_circuit(grid, marble, circuit_id)
         for circuit_id, marble in enumerate(
-            show_progress(
-                marbles, desc="Building circuits", unit=" circuit", colour="green"
-            )
+            show_progress(marbles, desc="Building circuits", unit=" circuit")
         )
     ]
 
@@ -845,7 +852,6 @@ def build_groups(circuits: list[Circuit]) -> list[list[Circuit]]:
         circuits,
         desc="Prepare mapping for group detection",
         unit=" circuit",
-        colour="green",
     ):
         for event in circuit.events:
             if event.neighbor is None:
@@ -1450,7 +1456,6 @@ class GroupCallbacks:
                 self.group_info.actions,
                 desc=f"Compiling callbacks for group {self.group_id}",
                 unit=" callbacks",
-                colour="green",
             )
         ):
             callback = action.make_callback(
@@ -1586,8 +1591,19 @@ class Simulation:
             callback.compile(self)
 
     def run(self):
-        for i in itertools.count():
-            self.run_until(self.cycle_start + self.cycle_length * i, float("inf"))
+        with progress_context(
+            desc="Running simulation", unit=" cycles"
+        ) as progress_bar:
+            try:
+                for i in itertools.count():
+                    progress_bar.n = i
+                    progress_bar.update(0)
+                    self.run_until(
+                        self.cycle_start + self.cycle_length * i, float("inf")
+                    )
+            finally:
+                progress_bar.refresh()
+                progress_bar.close()
 
     def run_until(self, target: int, deadline: float):
         # Not yet
@@ -1950,7 +1966,6 @@ def extract_info(
             group.circuits,
             desc=f"Extracting circuit info for group {i}",
             unit=" circuits",
-            colour="green",
         ):
             ticks_to_event_indexes = group.ticks_to_event_indexes[circuit]
             circuit_mapping[circuit.id] = circuit.extract_info(
@@ -1965,7 +1980,6 @@ def extract_info(
             group.displays,
             desc=f"Extracting display info for group {i}",
             unit=" displays",
-            colour="green",
         ):
             assert display.id is not None
             display_mapping[display.id] = display.extract_info()
@@ -1980,21 +1994,18 @@ def extract_info(
                 group_infos,
                 desc="Dumping group info",
                 unit=" groups",
-                colour="green",
             ):
                 file.write(packer.pack(group_info.dump()))
             for circuit_info in show_progress(
                 circuit_infos,
                 desc="Dumping circuit info",
                 unit=" circuits",
-                colour="green",
             ):
                 file.write(packer.pack(circuit_info.dump()))
             for display_info in show_progress(
                 display_infos,
                 desc="Dumping display info",
                 unit=" displays",
-                colour="green",
             ):
                 file.write(packer.pack(display_info.dump()))
 
@@ -2002,38 +2013,50 @@ def extract_info(
 
 
 def read_info(
-    path: pathlib.Path, grid: Grid
+    path: pathlib.Path,
+    grid: Grid,
+    group_only: bool = False,
 ) -> tuple[SimulationInfo, list[GroupInfo], list[CircuitInfo], list[DisplayInfo]]:
     import msgpack
 
+    # Unpack from a msgpack stream
     with path.open("rb") as file:
         unpacker = msgpack.Unpacker(file)
+
+        # Load simulation info
         simulation_info = SimulationInfo.load(next(unpacker))
+
+        # Load group info
         group_infos = [
             GroupInfo.load(next(unpacker))
             for _ in show_progress(
                 range(simulation_info.group_number),
                 desc="Loading group info",
                 unit=" groups",
-                colour="green",
             )
         ]
+
+        # Stop there
+        if group_only:
+            return simulation_info, group_infos, [], []
+
+        # Load circuit info
         circuit_infos = [
             CircuitInfo.load(next(unpacker))
             for _ in show_progress(
                 range(simulation_info.circuit_number),
                 desc="Loading circuit info",
                 unit=" circuits",
-                colour="green",
             )
         ]
+
+        # Load display info
         display_infos = [
             DisplayInfo.load(next(unpacker))
             for _ in show_progress(
                 range(simulation_info.display_number),
                 desc="Loading display info",
                 unit=" displays",
-                colour="green",
             )
         ]
 
@@ -2042,11 +2065,12 @@ def read_info(
         circuit_infos,
         desc="Patching marbles",
         unit=" marbles",
-        colour="green",
     ):
         x = circuit_info.x_positions[0]
         y = circuit_info.y_positions[0]
         grid[x][y] = circuit_info.replaced_char
+
+    # Return all info
     return simulation_info, group_infos, circuit_infos, display_infos
 
 
@@ -2059,31 +2083,6 @@ def main(
     input_stream: IO[bytes] | None = None,
     output_stream: IO[bytes] | None = None,
 ):
-    # Get cache name
-    sha256 = get_sha256(path)[:16]
-    cache_path = path.parent / (path.name + f".{sha256}.cache")
-
-    # Load grid
-    with open(path) as file:
-        grid = create_grid(file)
-
-    # Use cache
-    if check_cache and cache_path.exists() and msgpack is not None:
-        with open(cache_path, "rb") as file:
-            simulation_info, group_info, circuit_info, display_info = read_info(
-                cache_path, grid
-            )
-
-    # Perform analysis
-    else:
-        marbles = extract_marbles(grid)
-        circuits = build_circuits(grid, marbles)
-        raw_groups = build_groups(circuits)
-        groups = analyze_groups(raw_groups)
-        simulation_info, group_info, circuit_info, display_info = extract_info(
-            cache_path, groups
-        )
-
     # Input/Output
     if not sys.stdout.isatty():
         show_simulation = False
@@ -2097,6 +2096,31 @@ def main(
         input_stream = io.BytesIO()
     if output_stream is None:
         output_stream = io.BytesIO()
+
+    # Get cache name
+    sha256 = get_sha256(path)[:16]
+    cache_path = path.parent / (path.name + f".{sha256}.cache")
+
+    # Use cache
+    if check_cache and cache_path.exists() and msgpack is not None:
+        # Load grid
+        grid = create_grid(path) if show_simulation else []
+        simulation_info, group_info, circuit_info, display_info = read_info(
+            cache_path,
+            grid,
+            group_only=not show_simulation,
+        )
+
+    # Perform analysis
+    else:
+        grid = create_grid(path)
+        marbles = extract_marbles(grid)
+        circuits = build_circuits(grid, marbles)
+        raw_groups = build_groups(circuits)
+        groups = analyze_groups(raw_groups)
+        simulation_info, group_info, circuit_info, display_info = extract_info(
+            cache_path, groups
+        )
 
     # Prepare simulation
     input_output = SimulationIO(input_stream, output_stream)
