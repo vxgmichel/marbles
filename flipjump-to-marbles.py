@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+Convert a flip jump program in version 1 to a marble program
+"""
+
 import io
 import array
 import struct
@@ -693,7 +698,7 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--size", type=int, default=None)
     parser.add_argument("--program", type=argparse.FileType(mode="rb"), default=None)

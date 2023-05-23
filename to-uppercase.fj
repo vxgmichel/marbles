@@ -1,0 +1,20 @@
+// Convert lowercase ascii characters to uppercase.
+// Other ascii characters are left untouched.
+// Data is read from stdin and written to stdout.
+
+    startup
+  main:
+    bit.input current_char
+    bit.cmp 8, current_char, a_char, skip, continue1, continue1
+  continue1:
+    bit.cmp 8, current_char, z_char, continue2, continue2, skip
+  continue2:
+    bit.sub 8, current_char, to_upper
+  skip:
+    bit.print current_char
+    ;main
+
+  current_char: bit.vec 8, 0x00
+  to_upper: bit.vec 8, 0x20
+  a_char: bit.vec 8, 0x61
+  z_char: bit.vec 8, 0x7a

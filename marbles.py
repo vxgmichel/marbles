@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+"""
+Run a marble simulation based on the rules defined at:
+https://github.com/vxgmichel/marbles
+
+Optional dependencies:
+- `pip install tqdm` for progress bars
+- `pip install msgpack` for caching
+"""
+
 from __future__ import annotations
 import array
 import bisect
@@ -2157,7 +2167,7 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("file", type=pathlib.Path)
     parser.add_argument("--speed", type=float, default=10.0)
     parser.add_argument("--fps", type=float, default=60.0)
