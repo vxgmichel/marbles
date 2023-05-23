@@ -1822,24 +1822,30 @@ class ScreenDisplay:
             return False
         while True:
             char = get_char_from_stdin()
-            if char == b"\x03":
+            if char is None:
+                break
+            elif char == b"\x03":
                 raise KeyboardInterrupt
             elif char == b"\x1b":
                 char = sys.stdin.buffer.read(1)
                 assert char == b"[", char
                 char = sys.stdin.buffer.read(1)
-                assert char in b"ABCD"
-                self.changed = True
-                if char == b"A":
-                    self.x_offset += 1
-                elif char == b"B":
-                    self.x_offset -= 1
-                elif char == b"C":
-                    self.y_offset -= 1
-                elif char == b"D":
-                    self.y_offset += 1
-            elif char == b"b" or char == b"v":
-                if char == b"b":
+                if char in b"ABCD56":
+                    self.changed = True
+                    if char == b"A":
+                        self.x_offset += 1
+                    elif char == b"B":
+                        self.x_offset -= 1
+                    elif char == b"C":
+                        self.y_offset -= 1
+                    elif char == b"D":
+                        self.y_offset += 1
+                    elif char == b"5":
+                        self.x_offset += self.termsize.lines
+                    elif char == b"6":
+                        self.x_offset -= self.termsize.lines
+            elif char in b"bBvV":
+                if char in b"bB":
                     self.speed *= 1.5
                 else:
                     self.speed /= 1.5
