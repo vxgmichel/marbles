@@ -1696,7 +1696,7 @@ def drawing_context():
         if info is not None:
             termios.tcsetattr(fd, termios.TCSAFLUSH, info)
         # Disable alternative buffer
-        print("\033[?1049h", end="", flush=True)
+        print("\033[?1049l", end="", flush=True)
         # Show cursor
         print("\033[?25h", end="", flush=True)
         # Return
@@ -2208,6 +2208,11 @@ def main(
     # Ignore EOF
     except EOFError:
         pass
+    # Ignore KeyboardInterrupt
+    except KeyboardInterrupt:
+        if not QUIET:
+            print("Simulation interrupted.", file=sys.stderr)
+        exit(130)
     # Output captured IO if necessary
     finally:
         if isinstance(output_stream, io.BytesIO):
