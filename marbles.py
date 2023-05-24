@@ -1741,9 +1741,11 @@ class ScreenDisplay:
     ):
         self.fps = fps
         self.screen_info = screen_info
-        self.speed = speed
+        self.base_speed = speed
         self.io = simulation.io
         self.simulation = simulation
+        self.speed_factor = 0
+        self.pause = False
 
         self.x_offset = 0
         self.y_offset = 0
@@ -1759,6 +1761,12 @@ class ScreenDisplay:
         self.show_time_queue: deque[float] = deque(maxlen=self.average_over)
 
         self.frame: int
+
+    @property
+    def speed(self) -> int:
+        if self.pause:
+            return 0
+        return int(round(self.base_speed * 10 ** (self.speed_factor / 5)))
 
     def run(self):
         # Complete tick 0
@@ -1891,11 +1899,14 @@ class ScreenDisplay:
                         self.x_offset += self.termsize.lines
                     elif char == b"6":
                         self.x_offset -= self.termsize.lines
-            elif char in b"bBvV":
-                if char in b"bB":
-                    self.speed *= 1.5
+            elif char in b"iIdD":
+                if char in b"iI":
+                    self.speed_factor += 1
                 else:
-                    self.speed /= 1.5
+                    self.speed_factor -= 1
+                return True
+            elif char in b"pP":
+                self.pause ^= True
                 return True
             else:
                 break
