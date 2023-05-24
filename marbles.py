@@ -13,7 +13,7 @@ import array
 import bisect
 import contextlib
 import hashlib
-
+from collections import deque
 import io
 import enum
 import heapq
@@ -88,7 +88,8 @@ def progress_context(**kwargs):
     if tqdm is None or QUIET:
         yield Dummy()
         return
-    yield tqdm.tqdm(colour="green", **kwargs)
+    with tqdm.tqdm(colour="green", **kwargs) as context:
+        yield context
 
 
 def show_progress(arg: Iterable[T], **kwargs) -> Iterable[T]:
@@ -1547,22 +1548,38 @@ class GroupCallbacks:
         assert callbacks
         start_index = bisect.bisect(callbacks, (start, -1))
         stop_index = bisect.bisect(callbacks, (stop, -1))
+        check = deadline != math.inf
         # Run callbacks
+        previous_tick = None
         for index in range(start_index, stop_index):
-            _, _, callback = callbacks[index]
+            tick, _, callback = callbacks[index]
+            if (
+                check
+                and tick != previous_tick
+                and index % 1000 == 0
+                and time.time() > deadline
+            ):
+                return True, tick
             callback()
+            previous_tick = tick
         return False, callbacks[stop_index][0]
 
     def run_cycle(self, deadline: float) -> tuple[bool, int]:
+        if time.time() > deadline:
+            return True, 0
         cycle_callbacks = self.cycle_callbacks
         stop = len(self.cycle_callbacks) - 1
-        interrupt = False
         previous_tick = None
-        for i in range(0, stop):
-            tick, _, callback = cycle_callbacks[i]
-            if i % 100 == 0 and time.time() > deadline:
-                interrupt = True
-            if interrupt and tick != previous_tick:
+        check = deadline != math.inf
+        random.Random(0)
+        for index in range(0, stop):
+            tick, _, callback = cycle_callbacks[index]
+            if (
+                check
+                and tick != previous_tick
+                and index % 1000 == 0
+                and time.time() > deadline
+            ):
                 return True, tick
             callback()
             previous_tick = tick
@@ -1733,18 +1750,22 @@ class ScreenDisplay:
         self.changed = True
         self.termsize = os.terminal_size((0, 0))
         self.old_chars: set[tuple[Position, str]] = set()
+        self.status_fps = 10
+
+        self.average_over = int(round(fps))
+        self.speed_per_frame_queue: deque[int] = deque(maxlen=self.average_over)
+        self.fps_queue: deque[float] = deque(maxlen=self.average_over)
+        self.run_time_queue: deque[float] = deque(maxlen=self.average_over)
+        self.show_time_queue: deque[float] = deque(maxlen=self.average_over)
 
         self.frame: int
-        self.start_time: float
-        self.start_frame: int
 
     def run(self):
         # Complete tick 0
-        self.simulation.run_until(1, time.time() + 1)
+        self.simulation.run_until(1, math.inf)
 
         # Save information
-        self.start_frame = 0
-        self.start_time = time.time()
+        start_time = time.time()
         start_simulation_tick = self.simulation.current_tick
 
         # Iterator over steps
@@ -1754,17 +1775,14 @@ class ScreenDisplay:
 
             # Control
             if self.check_stdin():
-                self.start_time = time.time()
-                self.start_frame = self.frame
-                start_simulation_tick = self.simulation.current_tick
+                start_time = previous_time
+                start_simulation_tick = previous_simulation_tick
             step1 = time.time() - previous_time
 
             # Run simulation
-            delta_frame = self.frame - self.start_frame
-            new_simulation_tick = start_simulation_tick + int(
-                delta_frame * self.speed / self.fps
-            )
-            deadline = self.start_time + delta_frame / self.fps
+            deadline = previous_time + 1 / self.fps
+            delta_time = deadline - start_time
+            new_simulation_tick = start_simulation_tick + int(delta_time * self.speed)
             self.simulation.run_until(new_simulation_tick, deadline)
             step2 = time.time() - previous_time - step1
 
@@ -1787,7 +1805,7 @@ class ScreenDisplay:
             cycle_count = (
                 self.simulation.current_tick - self.simulation.cycle_start
             ) // self.simulation.cycle_length
-            self.print_status_bar(
+            self.update_status_bar(
                 actual_fps,
                 actual_speed_per_frame,
                 steps,
@@ -1795,7 +1813,7 @@ class ScreenDisplay:
                 self.simulation.cycle_length,
             )
 
-    def print_status_bar(
+    def update_status_bar(
         self,
         fps: float,
         speed_per_frame: int,
@@ -1803,19 +1821,38 @@ class ScreenDisplay:
         cycle_count: int,
         cycle_length: int,
     ):
-        sum_steps = sum(steps, 0)
-        stdin, show, run, sleep = [int(round(s * 100 / sum_steps)) for s in steps]
+        # Update queues
+        sum_steps = sum(steps)
+        _, run_time, show_time, _ = [s / sum_steps for s in steps]
+        self.run_time_queue.append(run_time)
+        self.show_time_queue.append(show_time)
+        self.speed_per_frame_queue.append(speed_per_frame)
+        self.fps_queue.append(fps)
+        if self.frame % (self.average_over // self.status_fps) != 1:
+            return
+        # Speeds
+        average_show_time = sum(self.show_time_queue) / len(self.show_time_queue)
+        average_run_time = sum(self.run_time_queue) / len(self.run_time_queue)
+        average_speed_per_frame = sum(self.speed_per_frame_queue) / len(
+            self.speed_per_frame_queue
+        )
+        average_fps = sum(self.fps_queue) / len(self.fps_queue)
+        average_speed = average_speed_per_frame * fps
+        average_cycle_speed = (
+            average_speed_per_frame * average_fps / self.simulation.cycle_length
+        )
+        # Steps
         info = "  | ".join(
             [
                 f"Tick: {self.simulation.current_tick:8d}",
                 f"Cycle: {cycle_count:4d} ({cycle_length:5d} ticks)",
-                f"Frame: {self.frame: 8d}",
+                f"Frame: {self.frame: 4d}",
                 f"FPS: {fps:7.2f} ",
-                f"Tick per frame: {speed_per_frame:8d}",
-                f"Cycle speed: {speed_per_frame * fps / self.simulation.cycle_length:4.1f}",
-                f"Speed: {int(speed_per_frame * fps):8d}",
-                f"Display: {show:3d} % CPU",
-                f"Simulation: {run:3d} % CPU",
+                f"Speed: {int(round(average_speed)):8d}",
+                f"Cycle speed: {average_cycle_speed:4.1f}",
+                f"Tick per frame: {int(round(average_speed_per_frame)):8d}",
+                f"Display: {int(round(100 * average_show_time)):3d} % CPU",
+                f"Simulation: {int(round(100 *average_run_time)):3d} % CPU",
             ]
         )
         i = self.termsize.lines - 2
@@ -2163,13 +2200,16 @@ def main(
     # Output captured IO if necessary
     finally:
         if isinstance(output_stream, io.BytesIO):
+            sys.stderr.flush()
             sys.stdout.buffer.write(output_stream.getvalue())
+            sys.stdout.flush()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("file", type=pathlib.Path)
     parser.add_argument("--speed", type=float, default=10.0)
+    parser.add_argument("--maxspeed", action="store_true", default=False)
     parser.add_argument("--fps", type=float, default=60.0)
     parser.add_argument("--input", type=argparse.FileType("rb"), default=None)
     parser.add_argument("--output", type=argparse.FileType("wb"), default=None)
@@ -2178,6 +2218,8 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true", default=False)
     namespace = parser.parse_args()
     QUIET = namespace.quiet
+    if namespace.maxspeed:
+        namespace.speed = 10**12
     main(
         namespace.file,
         namespace.speed,

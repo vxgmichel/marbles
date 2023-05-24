@@ -95,6 +95,7 @@ CMP_WIDTH = 4
 def main(
     width: int | None = 8, size: int | None = None, program: io.IOBase | None = None
 ):
+
     words = None
     if program is None and width is None:
         width = 8
@@ -113,7 +114,7 @@ def main(
             data_start,
             data_length,
         ) = struct.unpack("<HHQQQIQQQQ", header)
-        assert magic == 0x4a46
+        assert magic == 0x4A46
         assert version == 1
         assert segment_num == 1
         assert segment_start == 0
@@ -123,7 +124,6 @@ def main(
         width = word_size
         assert size in (None, data_length)
         size = data_length
-
 
         words = array.array("_BHLQ"[word_size // 8], program_string)
         assert len(words) == size
@@ -149,6 +149,16 @@ def main(
     j_size = high_address_size
     t_size = address_size
     r_size = t_size + j_size
+
+    # Program name
+    program_name = getattr(program, "name", "")
+    title = f"Flip-Jump computer with {size} {width}-bit words"
+    if program_name:
+        title += f" programmed with `{program_name}`"
+    print(title)
+    print("━" * len(title))
+    print()
+    print()
 
     # Header for J
     for i in range(j_size):
@@ -204,9 +214,13 @@ def main(
 
     row = (
         EMPTY
-        + "".join(VERTICAL.replace("  ", f"{d}".ljust(2)) for d in reversed(range(j_size)))
+        + "".join(
+            VERTICAL.replace("  ", f"{d}".ljust(2)) for d in reversed(range(j_size))
+        )
         + EMPTY
-        + "".join(VERTICAL.replace("  ", f"{d}".ljust(2)) for d in reversed(range(t_size)))
+        + "".join(
+            VERTICAL.replace("  ", f"{d}".ljust(2)) for d in reversed(range(t_size))
+        )
         + EMPTY * MEMORY_WIDTH
         + EMPTY
         + "".join(VERTICAL.replace("  ", f"{d}".ljust(2)) for d in range(t_size))
@@ -214,7 +228,6 @@ def main(
         + "".join(VERTICAL.replace("  ", f"{d}".ljust(2)) for d in range(j_size))
     )
     print(row)
-
 
     # Display
     row = (
@@ -400,10 +413,18 @@ def main(
         if words is not None:
             word1 = words[block_number * 2]
             word2 = words[block_number * 2 + 1]
-            value = format(word1, f"0{width}b")[::-1] + format(word2, f"0{width}b")[::-1]
+            str_value = (
+                format(word1, f"0{width}b")[::-1] + format(word2, f"0{width}b")[::-1]
+            )
             ignored = t_size - j_size
-            assert value[t_size:t_size+ignored] == "0" * ignored, (value, ignored, block_number, word1, word2)
-            value = list(map(int, value))
+            assert str_value[t_size : t_size + ignored] == "0" * ignored, (
+                str_value,
+                ignored,
+                block_number,
+                word1,
+                word2,
+            )
+            value = list(map(int, str_value))
         else:
             value = [0] * t_size * 2
 
@@ -542,7 +563,9 @@ def main(
 
             # Bit row 4: Memory 3
             previous_bit = i - 1 if i == t_size else bit - 1
-            raw = format(previous_bit % (2**low_address_size) ^ bit, f"0{low_address_size}b")
+            raw = format(
+                previous_bit % (2**low_address_size) ^ bit, f"0{low_address_size}b"
+            )
             low_decoder = raw.replace("0", DECODER_0).replace("1", DECODER_1_INVERTED)
             output = [VERTICAL] * (t_size + j_size)
             output[i] = DECODER_OUT_0
@@ -701,6 +724,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--width", type=int, default=None)
     parser.add_argument("--size", type=int, default=None)
-    parser.add_argument("--program", type=argparse.FileType(mode="rb"), default=None)
+    parser.add_argument(
+        "program", type=argparse.FileType(mode="rb"), default=None, nargs="?"
+    )
     namespace = parser.parse_args()
     main(namespace.width, namespace.size, namespace.program)

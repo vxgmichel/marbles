@@ -22,7 +22,6 @@ to-uppercase
    ║  ║  ║  ║  ║  ║  ║  ║     ╚══╬╛═╬╛═╬╛═╬╛═╬╛═╬╛═╬╛═╬╛═╝     ┛
    ║  ║  ║  ║  ║  ║  ║  ║        ╙○ ╙○ ╙○ ╙○ ╙○ ╙○ ╙○ ╙○       ┓ Read a byte from stdin
    ║  ║  ║  ║  ║  ║  ║  ║        ┃  ┃  ┃  ┃  ┃  ┃  ┃  ┃        ┃ LSB is on the right
-   ║  ║  ║  ║  ║  ║  ║  ║        ║  ║  ║  ║  ║  ║  ║  ║
    ║  ║  ║  ║  ║  ║  ║  ║        ╙◇ ╙◇ ╙◇ ╙◇ ╙◇ ╙◇ ╙◇ ╙◇       ┛
    ║  ║  ║  ║  ║  ║  ║  ║        ╚━╗╚═╗╚═╗║  ║  ║  ║  ║        ┓ Detect bytes in the range [0x60, 0x7f]
    ║  ║  ║  ║  ║  ║  ║  ║      ○ ╔╤╝╔╤╝╔╤╝║  ║  ║  ║  ║        ┃ It includes all lowercase letters ([0x61, 0x7a])
