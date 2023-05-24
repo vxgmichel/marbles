@@ -152,9 +152,11 @@ def main(
 
     # Program name
     program_name = getattr(program, "name", "")
-    title = f"Flip-Jump computer with {size} {width}-bit words"
+    title = f"{width}-bit Flip-Jump computer"
     if program_name:
-        title += f" programmed with `{program_name}`"
+        title += f" programmed with `{program_name}` ({size} words)"
+    else:
+        title += f" with {size} words of memory"
     print(title)
     print("━" * len(title))
     print()
