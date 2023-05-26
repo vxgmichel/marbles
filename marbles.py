@@ -440,7 +440,7 @@ class Action:
         circuit_id = self.circuit_id
 
         def callback():
-            values[circuit_id] = 0
+            values[circuit_id] &= 0
 
         return callback
 
@@ -847,7 +847,7 @@ def build_circuit(
 
 
 def build_circuits(grid: Grid, marbles: list[Marble]) -> list[Circuit]:
-    random.shuffle(marbles)
+    # random.shuffle(marbles)
     return [
         build_circuit(grid, marble, circuit_id)
         for circuit_id, marble in enumerate(
@@ -1487,6 +1487,169 @@ class GroupCallbacks:
         self.init_callbacks.append((tick + self.cycle_start, i, callback))
         self.cycle_callbacks.append((tick + self.cycle_length, i, callback))
 
+        self.run_cycle_callback = self.evaluate(simulation)
+
+    def evaluate(self, simulation: Simulation):
+
+        class Value:
+            last_eval: Value | None = None
+
+            def __init__(self):
+                pass
+
+            def inverse(self):
+                if isinstance(self, Zero):
+                    return One()
+                if isinstance(self, One):
+                    return Zero()
+                if isinstance(self, Inverse):
+                    return self.value
+                return Inverse(self)
+
+            def and_with(self, value: Value):
+                if isinstance(self, Zero) or isinstance(value, Zero):
+                    return Zero()
+                if isinstance(self, One):
+                    return value
+                if isinstance(value, One):
+                    return self
+                if isinstance(self, And) and isinstance(value, And):
+                    return And(*self.values, *value.values)
+                if isinstance(self, And):
+                    return And(*self.values, value)
+                if isinstance(value, And):
+                    return And(self, *value.values)
+                return And(self, value)
+
+            def __bool__(self) -> bool:
+                assert Value.last_eval is None
+                Value.last_eval = self
+                return True
+
+            def __iand__(self, value) -> Value:
+                if isinstance(value, int):
+                    assert value == 0
+                    return Zero()
+                assert isinstance(value, Value)
+                return self.and_with(value)
+
+            def __ixor__(self, value) -> Value:
+                assert isinstance(value, int)
+                assert value == 1
+                return self.inverse()
+
+            @classmethod
+            def pop_last_eval(cls) -> Value:
+                assert cls.last_eval is not None
+                value = cls.last_eval
+                cls.last_eval = None
+                return value
+
+        class Input(Value):
+            def __init__(self, id: int):
+                self.id = id
+            def __str__(self):
+                return f"values[{self.id}]"
+
+        class Read(Value):
+            def __init__(self, id: int):
+                self.id = id
+            def __str__(self):
+                return f"read[{self.id}]"
+
+        class Zero(Value):
+            def __str__(self):
+                return f"0"
+
+        class One(Value):
+            def __str__(self):
+                return f"1"
+
+        class Inverse(Value):
+            def __init__(self, value: Value):
+                self.value = value
+            def __str__(self):
+                if isinstance(self.value, Input) or isinstance(self.value, Read):
+                    return f"not {self.value}"
+                return f"not ({self.value})"
+
+        class And(Value):
+            def __init__(self, *values: list[Value]):
+                self.values = values
+
+            def __str__(self):
+                return " and ".join(map(str, self.values))
+
+        values = [Input(i) for i in range(len(simulation.values))]
+        display_values = [None for i in range(len(simulation.display_values))]
+        read_values = []
+        events = []
+        indent = " " * 4
+        code: list[str] = []
+
+        def read_bit():
+            value_in = Value.pop_last_eval()
+            value_out = Read(len(read_values))
+            read_values.append(read_values)
+            code.extend([
+                f"if {value_in}:",
+                indent + f"read[{value_out.id}] = read_bit()"
+            ])
+            return value_out
+
+        def write_bit(bit: int):
+            value_in = Value.pop_last_eval()
+            code.extend([
+                f"if {value_in}:",
+                indent + f"write_bit({bit})"
+            ])
+
+        def exit_called():
+            value_in = Value.pop_last_eval()
+            code.extend([
+                f"if {value_in}:",
+                indent + f"exit()"
+            ])
+
+        # Make callbacks
+        for i, (tick, action) in enumerate(
+            show_progress(
+                self.group_info.actions,
+                desc=f"Evaluating callbacks for group {self.group_id}",
+                unit=" callbacks",
+            )
+        ):
+            if tick < self.cycle_start:
+                continue
+            try:
+                action.make_callback(
+                    values,
+                    display_values,
+                    read_bit,
+                    write_bit,
+                )()
+            except SystemExit:
+                exit_called()
+
+        with open("temp.py", "w") as f:
+            f.write("def run_cycle():\n")
+            f.write(indent  + f"read = [0] * {len(read_values)}" + "\n")
+            for line in code:
+                f.write(indent + line + "\n")
+            for i, value in enumerate(display_values):
+                f.write(indent + f"display_values[{i}] = {value}" + "\n")
+            for i, value in enumerate(values):
+                f.write(indent + f"values[{i}] = {value}" + "\n")
+        globs = {
+            "values": simulation.values,
+            "display_values": simulation.display_values,
+            "read_bit": simulation.io.read_bit,
+            "write_bit": simulation.io.write_bit,
+        }
+        print("Written!")
+        exec(open("temp.py").read(), globs)
+        return globs["run_cycle"]
+
     def run_until(self, start: int, stop: int, deadline: float) -> tuple[bool, int]:
         assert start < stop
         if stop <= self.cycle_start:
@@ -1567,22 +1730,23 @@ class GroupCallbacks:
     def run_cycle(self, deadline: float) -> tuple[bool, int]:
         if time.time() > deadline:
             return True, 0
-        cycle_callbacks = self.cycle_callbacks
-        stop = len(self.cycle_callbacks) - 1
-        previous_tick = None
-        check = deadline != math.inf
-        random.Random(0)
-        for index in range(0, stop):
-            tick, _, callback = cycle_callbacks[index]
-            if (
-                check
-                and tick != previous_tick
-                and index % 1000 == 0
-                and time.time() > deadline
-            ):
-                return True, tick
-            callback()
-            previous_tick = tick
+        self.run_cycle_callback()
+        # cycle_callbacks = self.cycle_callbacks
+        # stop = len(self.cycle_callbacks) - 1
+        # previous_tick = None
+        # check = deadline != math.inf
+        # random.Random(0)
+        # for index in range(0, stop):
+        #     tick, _, callback = cycle_callbacks[index]
+        #     if (
+        #         check
+        #         and tick != previous_tick
+        #         and index % 1000 == 0
+        #         and time.time() > deadline
+        #     ):
+        #         return True, tick
+        #     callback()
+        #     previous_tick = tick
         return False, self.cycle_length
 
 
