@@ -1515,7 +1515,7 @@ class GroupCallbacks:
             )
             return interrupted, diff + next_tick
         # Stop before second cycle
-        if stop <= self.cycle_length:
+        if stop < self.cycle_length:
             return self.run_callbacks(self.cycle_callbacks, start, stop, deadline)
         # Complete current cycle
         if start != 0:
