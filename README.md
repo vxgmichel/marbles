@@ -11,7 +11,7 @@ Table of contents
 - [Simulation](#simulation)
 - [Programs](#programs)
 - [Flip-jump computer](#flip-jump-computer)
-- [Implementation][#implementation]
+- [Implementation](#implementation)
 - [Future improvements](#future-improvements)
 
 

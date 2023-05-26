@@ -1,5 +1,5 @@
-Marbles cheatsheet
-━━━━━━━━━━━━━━━━━━
+Marbles cheat sheet
+━━━━━━━━━━━━━━━━━━━
 
   Lower marble (0)     Upper marble (1)
     ╔═○═╗                ╔═●═╗
