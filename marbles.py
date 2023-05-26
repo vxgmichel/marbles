@@ -10,6 +10,7 @@ Optional dependencies:
 
 from __future__ import annotations
 import array
+import gzip
 import bisect
 import contextlib
 import hashlib
@@ -668,7 +669,9 @@ def guess_directions(grid: Grid, p: Position) -> set[Direction]:
 
 
 def create_grid(path: pathlib.Path) -> Grid:
-    with open(path) as file:
+    with open(path, "rb") as binary_file:
+        zipped = binary_file.read(2) == b"\x1f\x8b"
+    with gzip.open(path, mode="rt") if zipped else open(path) as file:
         return [
             {i: char for i, char in enumerate(line) if char not in string.whitespace}
             for line in show_progress(file, desc="Creating grid", unit=" lines")
@@ -2163,7 +2166,7 @@ def main(
 
     # Get cache name
     sha256 = get_sha256(path)[:16]
-    cache_path = path.parent / (path.name + f".{sha256}.cache")
+    cache_path = path.parent / f".{path.name}.{sha256}.cache"
 
     # Use cache
     if check_cache and cache_path.exists() and msgpack is not None:
@@ -2179,6 +2182,10 @@ def main(
     else:
         grid = create_grid(path)
         marbles = extract_marbles(grid)
+        if not marbles:
+            if not QUIET:
+                print("No marble found", file=sys.stderr)
+            exit(1)
         circuits = build_circuits(grid, marbles)
         raw_groups = build_groups(circuits)
         groups = analyze_groups(raw_groups)
