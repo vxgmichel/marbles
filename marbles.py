@@ -1,11 +1,31 @@
 #!/usr/bin/env python3
 """
-Run a marble simulation based on the rules defined at:
-https://github.com/vxgmichel/marbles
+usage: marbles.py [-h] [--speed SPEED] [--max-speed] [--fps FPS] [--input INPUT] [--output OUTPUT] [--ignore-cache] [--no-display] [--quiet] file
 
-Optional dependencies:
-- `pip install tqdm` for progress bars
-- `pip install msgpack` for caching
+Run a marble simulation. Install `tqdm` for better progress bars and `msgpack` for caching the analysis results.
+
+positional arguments:
+  file             path to the marble program to run
+
+options:
+  -h, --help       show this help message and exit
+  --speed SPEED    simulation speed in ticks/seconds (default is 10)
+  --max-speed      run the simulation at maximum speed
+  --fps FPS        the display refresh rate in frame/seconds (default is 60)
+  --input INPUT    path to the file to use as input bit stream (default is stdin if it is not a tty)
+  --output OUTPUT  path to the file to use as output bit stream (default is stdout if it is not a tty)
+  --ignore-cache   ignore the cache even if it exists (enabled by default when msgpack is not installed)
+  --no-display     run the simulation without the display at maximum speed (enabled by default when stdout is not a tty)
+  --quiet          do not output any information about the analysis
+
+During the simulation, the following key bindings are used:
+- arrows: move around the simulation
+- page up / page down: scroll faster up and down
+- i: increase simulation speed (use 5 times for a 10x factor)
+- d: decrease simulation speed (use 5 times for a 10x factor)
+- p: pause the simulation
+
+Check the simulation rules at: https://github.com/vxgmichel/marbles
 """
 
 from __future__ import annotations
@@ -43,12 +63,12 @@ from typing import (
 )
 
 try:
-    import tqdm
+    import tqdm  # type: ignore
 except ImportError:
     tqdm = None
 
 try:
-    import msgpack
+    import msgpack  # type: ignore
 except ImportError:
     msgpack = None
 
@@ -2229,20 +2249,65 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("file", type=pathlib.Path)
-    parser.add_argument("--speed", type=float, default=10.0)
-    parser.add_argument("--maxspeed", action="store_true", default=False)
-    parser.add_argument("--fps", type=float, default=60.0)
-    parser.add_argument("--input", type=argparse.FileType("rb"), default=None)
-    parser.add_argument("--output", type=argparse.FileType("wb"), default=None)
-    parser.add_argument("--ignore-cache", action="store_true", default=False)
-    parser.add_argument("--no-display", action="store_true", default=False)
-    parser.add_argument("--quiet", action="store_true", default=False)
+    parser = argparse.ArgumentParser(
+        description="Run a marble simulation. Install `tqdm` for better progress bars and `msgpack` for caching the analysis results.",
+        epilog="Check the simulation rules at: https://github.com/vxgmichel/marbles",
+    )
+    parser.add_argument(
+        "file", type=pathlib.Path, help="path to the marble program to run"
+    )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=10.0,
+        help="simulation speed in ticks/seconds (default is 10)",
+    )
+    parser.add_argument(
+        "--max-speed",
+        action="store_true",
+        default=False,
+        help="run the simulation at maximum speed",
+    )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=60.0,
+        help="the display refresh rate in frame/seconds (default is 60)",
+    )
+    parser.add_argument(
+        "--input",
+        type=argparse.FileType("rb"),
+        default=None,
+        help="path to the file to use as input bit stream (default is stdin if it is not a tty)",
+    )
+    parser.add_argument(
+        "--output",
+        type=argparse.FileType("wb"),
+        default=None,
+        help="path to the file to use as output bit stream (default is stdout if it is not a tty)",
+    )
+    parser.add_argument(
+        "--ignore-cache",
+        action="store_true",
+        default=False,
+        help="ignore the cache even if it exists (enabled by default when msgpack is not installed)",
+    )
+    parser.add_argument(
+        "--no-display",
+        action="store_true",
+        default=False,
+        help="run the simulation without the display at maximum speed (enabled by default when stdout is not a tty)",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        default=False,
+        help="do not output any information about the analysis",
+    )
     namespace = parser.parse_args()
     QUIET = namespace.quiet
-    if namespace.maxspeed:
-        namespace.speed = 10**12
+    if namespace.max_speed:
+        namespace.speed = 10**15
     main(
         namespace.file,
         namespace.speed,

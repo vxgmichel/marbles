@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """
-Convert a flip jump program in version 1 to a marble program
+usage: flipjump-to-marbles.py [-h] [--width WIDTH] [--size SIZE] [program]
+
+Convert flip jump machine code (in version 1) to a marble program
+
+positional arguments:
+  program        path to a .fjm file in version 1
+
+options:
+  -h, --help     show this help message and exit
+  --width WIDTH  word size in bits (when no program is provided)
+  --size SIZE    program size in words (when no program is provided)
 """
 
 import io
@@ -723,11 +733,11 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--width", type=int, default=None)
-    parser.add_argument("--size", type=int, default=None)
+    parser = argparse.ArgumentParser(description="Convert flip jump machine code (in version 1) to a marble program")
+    parser.add_argument("--width", type=int, default=None, help="word size in bits (when no program is provided)")
+    parser.add_argument("--size", type=int, default=None, help="program size in words (when no program is provided)")
     parser.add_argument(
-        "program", type=argparse.FileType(mode="rb"), default=None, nargs="?"
+        "program", type=argparse.FileType(mode="rb"), default=None, nargs="?", help="path to a .fjm file in version 1",
     )
     namespace = parser.parse_args()
     main(namespace.width, namespace.size, namespace.program)
