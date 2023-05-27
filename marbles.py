@@ -24,6 +24,7 @@ During the simulation, the following key bindings are used:
 - i: increase simulation speed (use 5 times for a 10x factor)
 - d: decrease simulation speed (use 5 times for a 10x factor)
 - p: pause the simulation
+- q: exit the simulation before it terminates
 
 Check the simulation rules at: https://github.com/vxgmichel/marbles
 """
@@ -101,7 +102,11 @@ def progress_context(desc: str, unit: str, **kwargs):
         def update(self, x: int) -> None:
             self.n += x
 
-    if tqdm is None or QUIET:
+    if QUIET:
+        yield Dummy()
+        return
+
+    if tqdm is None:
         dummy = Dummy()
         try:
             print(f"{desc}: ...", end="", flush=True, file=sys.stderr)
@@ -121,7 +126,10 @@ def progress_context(desc: str, unit: str, **kwargs):
 
 
 def show_progress(arg: Iterable[T], desc: str, unit: str, **kwargs) -> Iterable[T]:
-    if tqdm is None or QUIET:
+    if QUIET:
+        return arg
+
+    if tqdm is None:
 
         def gen():
             with progress_context(desc=desc, unit=unit, **kwargs) as progress_bar:
@@ -1939,6 +1947,8 @@ class ScreenDisplay:
             elif char in b"pP":
                 self.pause ^= True
                 return True
+            elif char in b"qQ":
+                raise KeyboardInterrupt
             else:
                 break
         return False
@@ -2246,7 +2256,7 @@ def main(
     # Ignore KeyboardInterrupt
     except KeyboardInterrupt:
         if not QUIET:
-            print("Simulation interrupted.", file=sys.stderr)
+            print("Simulation interrupted", file=sys.stderr)
         exit(130)
     # Output captured IO if necessary
     finally:

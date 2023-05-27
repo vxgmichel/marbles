@@ -241,8 +241,72 @@ All this is summarized in the [cheat sheet](./cheatsheet.txt).
 Simulation
 ----------
 
-TODO
+Marble programs can be executed using [marbles.py](./marbles.py).
 
+It requires a python3 interpreter (version `>= 3.8`). It is compatible with pypy3 for faster simulation.
+
+For instance, the [cheat sheet](./cheatsheet.txt) is a valid program and can be executed using:
+```shell
+./marbles.py cheatsheet.txt
+```
+
+The simulation is shown directly in the terminal at the rate of 10 simulation ticks per seconds.
+
+A couple of key bindings are available:
+- use the arrow keys to move around
+- use page up / page down or the mouse wheel to scroll faster
+- use `i` and `d` to increase or decrease the simulation speed (5 presses corresponds to a 10x factor)
+- use `p` to pause the simulation
+- use `q` to quit the simulation before it finishes
+
+During the simulation, the input bit stream can come from different places:
+- if the `--input` option is provided, the provided file is used as input stream
+- if stdin is not a tty (e.g when it comes from a linux pipe `|`), stdin is used directly
+- otherwise, the input stream is considered empty and the program will stop at the first attempt to read it.
+
+Similarly, the output bit stream can go to different places:
+- if the `--output` option is provided, the output stream is written at the given path
+- if stdout is not a tty (e.g when it goes to a linux pipe `|`), stdout is used directly
+- otherwise, the output stream is captured and written to stdout at the end of the simulation.
+
+Note that when stdout is not a tty, the simulation is not displayed and it will run as fast as possible until it terminates.
+
+For instance, try running the [to-uppercase.txt](./to-uppercase.txt) program using the following command:
+```shell
+$ echo Test! | ./marbles.py to-uppercase.txt | buffer
+Loading group info: done (1 groups)
+Compiling callbacks for group 0: done (128 callbacks)
+Running simulation: stopped with EOFError (7 cycles)
+TEST!
+```
+
+Note that the analysis information can be silenced using the `--quiet` option:
+```shell
+$ echo Test! | ./marbles.py to-uppercase.txt --quiet | cat
+TEST!
+```
+
+Other options are available, checkout the `--help` message more information:
+```shell
+$ ./marbles.py --help
+usage: marbles.py [-h] [--speed SPEED] [--max-speed] [--fps FPS] [--input INPUT] [--output OUTPUT] [--ignore-cache] [--no-display] [--quiet] file
+
+Run a marble simulation. Install `tqdm` for better progress bars and `msgpack` for caching the analysis results.
+
+positional arguments:
+  file             path to the marble program to run
+
+options:
+  -h, --help       show this help message and exit
+  --speed SPEED    simulation speed in ticks/seconds (default is 10)
+  --max-speed      run the simulation at maximum speed
+  --fps FPS        the display refresh rate in frame/seconds (default is 60)
+  --input INPUT    path to the file to use as input bit stream (default is stdin if it is not a tty)
+  --output OUTPUT  path to the file to use as output bit stream (default is stdout if it is not a tty)
+  --ignore-cache   ignore the cache even if it exists (enabled by default when msgpack is not installed)
+  --no-display     run the simulation without the display at maximum speed (enabled by default when stdout is not a tty)
+  --quiet          do not output any information about the analysis
+```
 
 Programs
 --------
