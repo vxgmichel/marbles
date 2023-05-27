@@ -93,30 +93,44 @@ if TYPE_CHECKING:
 
 
 @contextlib.contextmanager
-def progress_context(**kwargs):
+def progress_context(desc: str, unit: str, **kwargs):
     class Dummy:
-        n = 0
+        def __init__(self) -> None:
+            self.n = 0
 
-        def update(self, _):
-            pass
-
-        def refresh(self):
-            pass
-
-        def close(self):
-            pass
+        def update(self, x: int) -> None:
+            self.n += x
 
     if tqdm is None or QUIET:
-        yield Dummy()
+        dummy = Dummy()
+        try:
+            print(f"{desc}: ...", end="", flush=True, file=sys.stderr)
+            yield dummy
+        except BaseException as exc:
+            print(
+                f"\b\b\bstopped with {exc.__class__.__name__} ({dummy.n}{unit})",
+                flush=True,
+                file=sys.stderr,
+            )
+            raise
+        else:
+            print(f"\b\b\bdone ({dummy.n}{unit})", flush=True, file=sys.stderr)
         return
-    with tqdm.tqdm(colour="green", **kwargs) as context:
+    with tqdm.tqdm(desc=desc, unit=unit, colour="green", **kwargs) as context:
         yield context
 
 
-def show_progress(arg: Iterable[T], **kwargs) -> Iterable[T]:
+def show_progress(arg: Iterable[T], desc: str, unit: str, **kwargs) -> Iterable[T]:
     if tqdm is None or QUIET:
-        return arg
-    return tqdm.tqdm(arg, colour="green", **kwargs)
+
+        def gen():
+            with progress_context(desc=desc, unit=unit, **kwargs) as progress_bar:
+                for item in arg:
+                    progress_bar.update(1)
+                    yield item
+
+        return gen()
+    return tqdm.tqdm(arg, desc=desc, unit=unit, colour="green", **kwargs)
 
 
 # Types
@@ -1644,16 +1658,10 @@ class Simulation:
         with progress_context(
             desc="Running simulation", unit=" cycles"
         ) as progress_bar:
-            try:
-                for i in itertools.count():
-                    progress_bar.n = i
-                    progress_bar.update(0)
-                    self.run_until(
-                        self.cycle_start + self.cycle_length * i, float("inf")
-                    )
-            finally:
-                progress_bar.refresh()
-                progress_bar.close()
+            for i in itertools.count():
+                progress_bar.n = i
+                progress_bar.update(0)
+                self.run_until(self.cycle_start + self.cycle_length * i, float("inf"))
 
     def run_until(self, target: int, deadline: float):
         # Not yet

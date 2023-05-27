@@ -733,11 +733,27 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert flip jump machine code (in version 1) to a marble program")
-    parser.add_argument("--width", type=int, default=None, help="word size in bits (when no program is provided)")
-    parser.add_argument("--size", type=int, default=None, help="program size in words (when no program is provided)")
+    parser = argparse.ArgumentParser(
+        description="Convert flip jump machine code (in version 1) to a marble program"
+    )
     parser.add_argument(
-        "program", type=argparse.FileType(mode="rb"), default=None, nargs="?", help="path to a .fjm file in version 1",
+        "--width",
+        type=int,
+        default=None,
+        help="word size in bits (when no program is provided)",
+    )
+    parser.add_argument(
+        "--size",
+        type=int,
+        default=None,
+        help="program size in words (when no program is provided)",
+    )
+    parser.add_argument(
+        "program",
+        type=argparse.FileType(mode="rb"),
+        default=None,
+        nargs="?",
+        help="path to a .fjm file in version 1",
     )
     namespace = parser.parse_args()
     main(namespace.width, namespace.size, namespace.program)
