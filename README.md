@@ -10,7 +10,7 @@ Table of contents
 - [Definition](#definition)
 - [Simulation](#simulation)
 - [Programs](#programs)
-- [Flip-jump computer](#flip-jump-computer)
+- [Flip-jump computers](#flip-jump-computers)
 - [Implementation](#implementation)
 - [Future improvements](#future-improvements)
 
@@ -311,11 +311,44 @@ options:
 Programs
 --------
 
-TODO
+A couple of marble programs are provided in the repository, other than the [cheatsheet.txt](./cheatsheet.txt) program mentioned earlier.
 
 
-Flip-Jump computer
-------------------
+### Counters with 7-segment display
+
+Three different counter programs are provided:
+- [4-bit-counter.txt](./4-bit-counter.txt)
+- [8-bit-counter.txt](./8-bit-counter.txt)
+- [16-bit-counter.txt](./16-bit-counter.txt)
+
+It demonstrate the use of a single-digit 7-segment display design with a width of 31 characters that can be concatenated for larger displays.
+
+It includes:
+- The display itself, using the grid characters
+- The synchronization of all the segment marbles in order to avoid display artifacts
+- A 4-to-16-bit decoder to help with setting the right segment for the right digit
+- The 4/8/16-bit counter itself, that loops forever
+
+### ASCII to-uppercase converter
+
+A [to-uppercase.txt](./to-uppercase.txt) program is provided to demonstrate that the marble simulation can run non-trivial computation.
+
+This program converts every ascii lowercase letter from the input stream to an uppercase letter, leaving the other characters untouched.
+
+It stops when the input stream is empty.
+
+Each block in the program is commented to demonstrate how such programs can be structured in a readable way.
+
+It also shows that those blocks can be easily copied, pasted and moved around.
+
+Another version of the same program is provided as [to-uppercase-with-flipjump.txt.gz](./to-uppercase-with-flipjump.txt.gz).
+
+This version is compressed in order to keep the file size small, as the original text file is about 140 MB.
+
+The way this file is generated is explained in the next section where flip jump computers are presented, starting with [tiny-flip-jump.txt](./tiny-flip-jump.txt).
+
+Flip-Jump computers
+-------------------
 
 TODO
 
