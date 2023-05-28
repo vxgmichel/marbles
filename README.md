@@ -375,7 +375,7 @@ In short, only the following bits are programmed in the computer:
 
 Those bit values appear in the bottom-right corner of each memory cell, using a lower marble `○` for `0` and and upper marble `●` for `1`.
 
-Here is the program running with `\x00\x10` input mentioned earlier:
+Here is the program running with the `\x00\x10` input mentioned earlier:
 ```shell
 ± echo -n '\x00\x10' | ./marbles.py tiny-flipjump.txt --quiet | xxd
 00000000: 5555 55                                  UUU
@@ -390,23 +390,6 @@ The script [flipjump-to-marbles.py](./flipjump-to-marbles.py) can be used to gen
 $ ./flipjump-to-marbles.py --width 8
 8-bit FlipJump computer with 32 words of memory
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-   ╔════════════════════════════════════════════════════════════════════════════════════════════╗
-   ║  ╔══════════════════════════════════════════════════════════════════════════════════════╗  ║
-   ║  ║  ╔════════════════════════════════════════════════════════════════════════════════╗  ║  ║
-   ║  ║  ║  ╔══════════════════════════════════════════════════════════════════════════╗  ║  ║  ║
-   ║  ║  ║  ║     ╔══════════════════════════════════════════════════════════════╗     ║  ║  ║  ║
-   ║  ║  ║  ║     ║  ╔════════════════════════════════════════════════════════╗  ║     ║  ║  ║  ║
-   ║  ║  ║  ║     ║  ║  ╔══════════════════════════════════════════════════╗  ║  ║     ║  ║  ║  ║
-   ║  ║  ║  ║     ║  ║  ║  ╔════════════════════════════════════════════╗  ║  ║  ║     ║  ║  ║  ║
-   ║  ║  ║  ║     ║  ║  ║  ║  ╔══════════════════════════════════════╗  ║  ║  ║  ║     ║  ║  ║  ║
-   ║  ║  ║  ║     ║  ║  ║  ║  ║  ╔════════════════════════════════╗  ║  ║  ║  ║  ║     ║  ║  ║  ║
-   ║  ║  ║  ║     ║  ║  ║  ║  ║  ║  ╔══════════════════════════╗  ║  ║  ║  ║  ║  ║     ║  ║  ║  ║
-   ║  ║  ║  ║     ║  ║  ║  ║  ║  ║  ║  ╔════════════════════╗  ║  ║  ║  ║  ║  ║  ║     ║  ║  ║  ║
-   ║J ║J ║J ║J    ║F ║F ║F ║F ║F ║F ║F ║F                   ║F ║F ║F ║F ║F ║F ║F ║F    ║J ║J ║J ║J
-   ║3 ║2 ║1 ║0    ║7 ║6 ║5 ║4 ║3 ║2 ║1 ║0                   ║0 ║1 ║2 ║3 ║4 ║5 ║6 ║7    ║0 ║1 ║2 ║3
-   ╟□ ╟□ ╟□ ╟□    ╟□ ╟□ ╟□ ╟□ ╟□ ╟□ ╟□ ╟□                   ╟□ ╟□ ╟□ ╟□ ╟□ ╟□ ╟□ ╟□    ╟□ ╟□ ╟□ ╟□
 [...]
 ```
 
@@ -425,14 +408,11 @@ $ ./flipjump-to-marbles.py --width 32 --size 128
 [...] # About 21 MB
 ```
 
-More conveniently, those computers can be generated directly from a FlipJump memory file (`.fjm`).
-
-Width and size are taken directly from the file header, e.g:
+More conveniently, those computers can be generated from a FlipJump memory file (`.fjm`). Width and size are taken directly from the file header, e.g:
 ```shell
 $ ./flipjump-to-marbles.py hello_world.fjm
 16-bit FlipJump computer programmed with `hello_world.fjm` (262 words)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 [...]
 ```
 
@@ -453,7 +433,7 @@ Hello, World!
 
 ### ASCII to-uppercase converter, using FlipJump
 
-As an example, let's implement the `to-uppercase` program from earlier using FlipJump.
+As an example, let's implement the ascii `to-uppercase` program from earlier using FlipJump.
 
 First, write the program in FlipJump assembly, as in [to-uppercase.fj](./to-uppercase.fj):
 
@@ -481,13 +461,12 @@ Then assemble it using version 1 and the lowest width possible
 $ python ../flip-jump/src/fj.py --asm to-uppercase.fj -o to-uppercase.fjm -w 16 -v 1
 ```
 
-And convert it to a marble program. The file is likely to be quite bit (about 140 MB in this case), so compress it with gzip:
-
+Convert it to a marble program. The file is likely to be quite bit (about 140 MB in this case), so compress it with gzip:
 ```shell
 $ ./flipjump-to-marbles.py to-uppercase.fjm | gzip --best > to-uppercase-with-flipjump.txt.gz
 ```
 
-Compressed file can be provided directly to the [marbles.py](./marbles.py) simulator:
+Compressed files can be provided directly to the [marbles.py](./marbles.py) simulator:
 ```shell
 $ echo a | pypy3 ./marbles.py to-uppercase-with-flipjump.txt.gz --quiet | cat
 A
