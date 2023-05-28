@@ -10,7 +10,7 @@ Table of contents
 - [Definition](#definition)
 - [Simulation](#simulation)
 - [Programs](#programs)
-- [Flip-jump computers](#flip-jump-computers)
+- [FlipJump computers](#flipjump-computers)
 - [Implementation](#implementation)
 - [Future improvements](#future-improvements)
 
@@ -333,13 +333,9 @@ It includes:
 
 A [to-uppercase.txt](./to-uppercase.txt) program is provided to demonstrate that the marble simulation can run non-trivial computation.
 
-This program converts every ascii lowercase letter from the input stream to an uppercase letter, leaving the other characters untouched.
+This program converts every ascii lowercase letter from the input stream to an uppercase letter, leaving the other characters untouched. It stops when the input stream is empty.
 
-It stops when the input stream is empty.
-
-Each block in the program is commented to demonstrate how such programs can be structured in a readable way.
-
-It also shows that those blocks can be easily copied, pasted and moved around.
+Each block in the program is commented to demonstrate how such programs can be structured in a readable way. It also shows that those blocks can be easily copied, pasted and moved around.
 
 Another version of the same program is provided as [to-uppercase-with-flipjump.txt.gz](./to-uppercase-with-flipjump.txt.gz).
 
@@ -347,11 +343,172 @@ This version is compressed in order to keep the file size small, as the original
 
 The way this file is generated is explained in the next section where flip jump computers are presented, starting with [tiny-flip-jump.txt](./tiny-flip-jump.txt).
 
-Flip-Jump computers
--------------------
+FlipJump computers
+------------------
 
-TODO
+[FlipJump](https://esolangs.org/wiki/FlipJump) is a 1-instruction language. As the wiki entry on [esoloangs](https://esolangs.org) says:
 
+> FlipJump is intending to be the simplest / most-primitive programming language. Yet, it can do any modern computation.
+> As the name implies - It Flips a bit, then Jumps (unconditionally).
+
+
+### A tiny computer
+
+A FlipJump computer is defined by its word size in bits (also called width). The smallest FlipJump computer has a width of 4 bits.
+
+A marble implementation of this tiny computer can be found in [tiny-flipjump.txt](./tiny-flipjump.txt). It is programmed with two instructions:
+```
+ 9;8 // Write 1 to the output stream and go to the second instruction
+ 8;0 // Write 0 to the output stream and read a bit from the input stream
+     // Go to the first instruction if it is 0, stop the program otherwise
+ ```
+
+This program outputs `1` then `0` for each `0` in the input stream and stops at the first `1`. For instance, giving `\x00\x10` as input produces `\x55\x55\x55`
+
+It is 16 bits long but in practice, only 7 of those bits are actually programmed in the computer. That's because the jump addresses are considered to be instruction-aligned, meaning that bits 4, 5, 6 for each instruction are expected to be 0. Also, bits 0, 1 and 7 of the second instruction have a special meaning and are dedicated to input/output operations.
+
+In short, only the following bits are programmed in the computer:
+```
+0b1001 0b1...
+0b10.. 0b....
+```
+
+Those bit values appear in the bottom-right corner of each memory cell, using a lower marble `○` for `0` and and upper marble `●` for `1`.
+
+Here is the program running with `\x00\x10` input mentioned earlier:
+```shell
+± echo -n '\x00\x10' | ./marbles.py tiny-flipjump.txt --quiet | xxd
+00000000: 5555 55                                  UUU
+```
+
+### Larger computers
+
+This 4-bit computer is quite limited but the same design can be generalized to larger width.
+
+The script [flipjump-to-marbles.py](./flipjump-to-marbles.py) can be used to generate larger computers:
+```shell
+$ ./flipjump-to-marbles.py --width 8
+8-bit FlipJump computer with 32 words of memory
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+   ╔════════════════════════════════════════════════════════════════════════════════════════════╗
+   ║  ╔══════════════════════════════════════════════════════════════════════════════════════╗  ║
+   ║  ║  ╔════════════════════════════════════════════════════════════════════════════════╗  ║  ║
+   ║  ║  ║  ╔══════════════════════════════════════════════════════════════════════════╗  ║  ║  ║
+   ║  ║  ║  ║     ╔══════════════════════════════════════════════════════════════╗     ║  ║  ║  ║
+   ║  ║  ║  ║     ║  ╔════════════════════════════════════════════════════════╗  ║     ║  ║  ║  ║
+   ║  ║  ║  ║     ║  ║  ╔══════════════════════════════════════════════════╗  ║  ║     ║  ║  ║  ║
+   ║  ║  ║  ║     ║  ║  ║  ╔════════════════════════════════════════════╗  ║  ║  ║     ║  ║  ║  ║
+   ║  ║  ║  ║     ║  ║  ║  ║  ╔══════════════════════════════════════╗  ║  ║  ║  ║     ║  ║  ║  ║
+   ║  ║  ║  ║     ║  ║  ║  ║  ║  ╔════════════════════════════════╗  ║  ║  ║  ║  ║     ║  ║  ║  ║
+   ║  ║  ║  ║     ║  ║  ║  ║  ║  ║  ╔══════════════════════════╗  ║  ║  ║  ║  ║  ║     ║  ║  ║  ║
+   ║  ║  ║  ║     ║  ║  ║  ║  ║  ║  ║  ╔════════════════════╗  ║  ║  ║  ║  ║  ║  ║     ║  ║  ║  ║
+   ║J ║J ║J ║J    ║F ║F ║F ║F ║F ║F ║F ║F                   ║F ║F ║F ║F ║F ║F ║F ║F    ║J ║J ║J ║J
+   ║3 ║2 ║1 ║0    ║7 ║6 ║5 ║4 ║3 ║2 ║1 ║0                   ║0 ║1 ║2 ║3 ║4 ║5 ║6 ║7    ║0 ║1 ║2 ║3
+   ╟□ ╟□ ╟□ ╟□    ╟□ ╟□ ╟□ ╟□ ╟□ ╟□ ╟□ ╟□                   ╟□ ╟□ ╟□ ╟□ ╟□ ╟□ ╟□ ╟□    ╟□ ╟□ ╟□ ╟□
+[...]
+```
+
+Those computers grows in size very rapidly so make sure to specify the size in words:
+```shell
+$ ./flipjump-to-marbles.py --width 16
+[...] # About 163 MB
+
+$ ./flipjump-to-marbles.py --width 32
+[...] # About 21 TB
+
+$ ./flipjump-to-marbles.py --width 16 --size 128
+[...] # About 5 MB
+
+$ ./flipjump-to-marbles.py --width 32 --size 128
+[...] # About 21 MB
+```
+
+More conveniently, those computers can be generated directly from a FlipJump memory file (`.fjm`).
+
+Width and size are taken directly from the file header, e.g:
+```shell
+$ ./flipjump-to-marbles.py hello_world.fjm
+16-bit FlipJump computer programmed with `hello_world.fjm` (262 words)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[...]
+```
+
+Note however that the FlipJump program must be assembled in version 1.
+
+See below the complete toolchain from a FlipJump assembly file to executing the program:
+```shell
+# Assemble a hello world program from the flip-jump repository (width 16, version 1)
+$ python ../flip-jump/src/fj.py --asm ../flip-jump/programs/print_tests/hello_world.fj -o hello_world.fjm -w 16 -v 1
+
+# Convert it to a marble program
+$ ./flipjump-to-marbles.py hello_world.fjm > hello_world.txt
+
+# Run it with mypy for faster execution
+$ pypy3 ./marbles.py hello_world.txt --quiet | buffer
+Hello, World!
+```
+
+### ASCII to-uppercase converter, using FlipJump
+
+As an example, let's implement the `to-uppercase` program from earlier using FlipJump.
+
+First, write the program in FlipJump assembly, as in [to-uppercase.fj](./to-uppercase.fj):
+
+```asm
+  startup
+main:
+  bit.input current_char
+  bit.cmp 8, current_char, a_char, skip, continue1, continue1
+continue1:
+  bit.cmp 8, current_char, z_char, continue2, continue2, skip
+continue2:
+  bit.sub 8, current_char, to_upper
+skip:
+  bit.print current_char
+  ;main
+
+current_char: bit.vec 8, 0x00
+to_upper: bit.vec 8, 0x20
+a_char: bit.vec 8, 0x61
+z_char: bit.vec 8, 0x7a
+```
+
+Then assemble it using version 1 and the lowest width possible
+```shell
+$ python ../flip-jump/src/fj.py --asm to-uppercase.fj -o to-uppercase.fjm -w 16 -v 1
+```
+
+And convert it to a marble program. The file is likely to be quite bit (about 140 MB in this case), so compress it with gzip:
+
+```shell
+$ ./flipjump-to-marbles.py to-uppercase.fjm | gzip --best > to-uppercase-with-flipjump.txt.gz
+```
+
+Compressed file can be provided directly to the [marbles.py](./marbles.py) simulator:
+```shell
+$ echo a | pypy3 ./marbles.py to-uppercase-with-flipjump.txt.gz --quiet | cat
+A
+```
+
+It's going to take about a minute for the simulator to run the analysis on a file this big, but the results will be cached if `msgpack` is installed. On the next execution, the simulation should start in a couple of seconds.
+
+Remove the `--quiet` option to show a couple of interesting metrics:
+```shell
+$ echo a | pypy3 ./marbles.py to-uppercase-with-flipjump.txt.gz | buffer
+Loading group info: 100%|█████████████████████████████████████| 1/1 [00:02<00:00,  2.48s/ groups]
+Compiling callbacks for group 0: 100%|████| 2570584/2570584 [00:02<00:00, 1121743.30 callbacks/s]
+Running simulation: 1588 cycles [01:25, 18.61 cycles/s]
+A
+```
+
+On the second execution, it took only 4 seconds for the simulation to start. However, the simulation itself took 1 minute and 25 seconds to process the 2 characters in the input string `a\n`. This is because the program took 1588 instructions to complete and the simulator barely reaches 20 instructions per second.
+
+This might sound very slow (and it is), but keep in mind that FlipJump only flip bits so it takes many instructions to perform the most basic arithmetic operations. Also note that for every instruction, many marble interactions happen in all the memory cells even if all of them but one are left untouched by the computer. Actually, it took quite a lot of effort to optimize the simulator to the point where such large marble programs can realistically run.
+
+More implementation details are discussed below.
 
 Implementation
 --------------

@@ -1,5 +1,5 @@
-A tiny 4-bit Flip-Jump computer with 4 words
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+A tiny 4-bit FlipJump computer with 4 words
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 • This flip-jump computer is programmed with 2 instructions, 9;8 and 8;0
 • It outputs 1 then 0 for each 0 in stdin and stops at the first 1

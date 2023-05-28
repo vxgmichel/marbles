@@ -12,6 +12,7 @@ options:
   --width WIDTH  word size in bits (when no program is provided)
   --size SIZE    program size in words (when no program is provided)
 """
+from __future__ import annotations
 
 import io
 import array
@@ -141,7 +142,7 @@ def main(
     # Make sure width is a power of 2
     assert width is not None
     assert width >= 4
-    assert width.bit_count() == 1
+    assert bin(width).count("1") == 1
     word = width
     instruction = 2 * width
     max_memory = 2**width
@@ -162,7 +163,7 @@ def main(
 
     # Program name
     program_name = getattr(program, "name", "")
-    title = f"{width}-bit Flip-Jump computer"
+    title = f"{width}-bit FlipJump computer"
     if program_name:
         title += f" programmed with `{program_name}` ({size} words)"
     else:
