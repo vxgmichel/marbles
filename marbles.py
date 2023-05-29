@@ -1510,7 +1510,7 @@ class GroupCallbacks:
         for i, (tick, action) in enumerate(
             show_progress(
                 self.group_info.actions,
-                desc=f"Compiling callbacks for group {self.group_id}",
+                desc=f"Generating callbacks for group {self.group_id}",
                 unit=" callbacks",
             )
         ):

@@ -1,7 +1,7 @@
 Marbles
 =======
 
-Marbles is a computational model and an esoteric programming language based marble circuitry.
+Marbles is a computational model and an esoteric programming language based on marble circuitry.
 
 
 Table of contents
@@ -11,7 +11,7 @@ Table of contents
 - [Simulation](#simulation)
 - [Programs](#programs)
 - [FlipJump computers](#flipjump-computers)
-- [Implementation](#implementation)
+- [Implementation and performance](#implementation-and-performance)
 - [Future improvements](#future-improvements)
 
 
@@ -275,7 +275,7 @@ For instance, try running the [to-uppercase.txt](./to-uppercase.txt) program usi
 ```shell
 $ echo Test! | ./marbles.py to-uppercase.txt | buffer
 Loading group info: done (1 groups)
-Compiling callbacks for group 0: done (128 callbacks)
+Generating callbacks for group 0: done (128 callbacks)
 Running simulation: stopped with EOFError (7 cycles)
 TEST!
 ```
@@ -477,8 +477,8 @@ It's going to take about a minute for the simulator to run the analysis on a fil
 Remove the `--quiet` option to show a couple of interesting metrics:
 ```shell
 $ echo a | pypy3 ./marbles.py to-uppercase-with-flipjump.txt.gz | buffer
-Loading group info: 100%|█████████████████████████████████████| 1/1 [00:02<00:00,  2.48s/ groups]
-Compiling callbacks for group 0: 100%|████| 2570584/2570584 [00:02<00:00, 1121743.30 callbacks/s]
+Loading group info: 100%|██████████████████████████████████████| 1/1 [00:02<00:00,  2.48s/ groups]
+Generating callbacks for group 0: 100%|████| 2570584/2570584 [00:02<00:00, 1121743.30 callbacks/s]
 Running simulation: 1588 cycles [01:25, 18.61 cycles/s]
 A
 ```
@@ -489,10 +489,50 @@ This might sound very slow (and it is), but keep in mind that FlipJump only flip
 
 More implementation details are discussed below.
 
-Implementation
---------------
 
-TODO
+Implementation and performance
+------------------------------
+
+### General idea
+
+A naive implementation of the simulator would list all the marbles, initialize them with the proper directions and loop over simulation ticks. At each tick, the new state for a marble is computed from the information on its cell and its neighbors, similar to an cellular automaton.
+
+This would be really slow. Instead, the current implementation focus on interactions. It first performs an analysis of the program, separating the positional information (i.e where the marbles are specifically on the grid) from the state information (i.e whether the marble is in upper or lower state).
+
+One key insight is that after some time, positions on a given circuit become periodic and that all connected circuits share the same period. In the context of the simulator, connected circuits are called a group. For instance, the [cheat sheet](./cheatsheet.txt) has 17 different groups.
+
+That means that for a given group, events can be recorded from the first tick to the point when the group becomes periodic. Then, events can be recorded for a full cycle. All this information allows for quickly computing the position of any marble at any arbitrary tick in the future.
+
+Similarly, the order of interactions between the marbles can be determined in advance for both the initialization phase and the cycle phase. Callbacks are generated for each interaction so that the actual simulation is only a matter of running and cycling those callbacks.
+
+### Analysis
+
+More precisely, the analysis is composed of the following steps:
+
+- Creating the grid: read the program file and initialize the grid
+
+- Extracting marbles from the grid: list the marbles and replace them with the right piece of tracks
+
+- Building circuits: for each marble, follow the circuit and list all positions and interactions in order.
+
+- Detecting groups: group the circuits based on their connections
+
+- Analyzing groups: for each group, find its period and the tick when the first cycle start
+
+- Extracting info: gather all information necessary to run the simulation
+
+- Dumping info: write this information to a cache file using `msgpack`
+
+- Generating callbacks: generate initialization and cycle callbacks for each group
+
+
+### Display
+
+The display logic has also been optimized for large programs. In practice, showing the simulation on screen should only take a small part of the time in each frame, even when rendering at 60 FPS. This information is available in the status bar in the bottom row of the simulation screen.
+
+This is mostly done by using a binary search when looking for marbles (and displays) in the current window. This search however is only performed along the X-axis (vertically), which means that the display logic is optimized for long vertical programs but not long horizontal programs.
+
+The simulator also uses a binary search to find the position for each marble using the information computed by the analysis. It also avoids refreshing part of the screen that doesn't need to be refreshed.
 
 
 Further improvements
