@@ -3,6 +3,10 @@ Marbles
 
 Marbles is a computational model and an esoteric programming language based on marble circuitry.
 
+<p align="center">
+  <img src="./demo.gif" width="50%"/><br>
+  <em><sub>An ASCII to-uppercase converter</sub></em>
+</p>
 
 Table of contents
 -----------------
