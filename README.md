@@ -12,7 +12,7 @@ Table of contents
 - [Programs](#programs)
 - [FlipJump computers](#flipjump-computers)
 - [Implementation and performance](#implementation-and-performance)
-- [Future improvements](#future-improvements)
+- [Further improvements](#further-improvements)
 
 
 Definition
@@ -522,7 +522,7 @@ More precisely, the analysis is composed of the following steps:
 
 - Extracting marbles from the grid: list the marbles and replace them with the right piece of tracks
 
-- Building circuits: for each marble, follow the circuit and list all positions and interactions in order.
+- Building circuits: for each marble, follow the circuit and list all positions and interactions in order
 
 - Detecting groups: group the circuits based on their connections
 
@@ -539,12 +539,29 @@ More precisely, the analysis is composed of the following steps:
 
 The display logic has also been optimized for large programs. In practice, showing the simulation on screen should only take a small part of the time in each frame, even when rendering at 60 FPS. This information is available in the status bar in the bottom row of the simulation screen.
 
-This is mostly done by using a binary search when looking for marbles (and displays) in the current window. This search however is only performed along the X-axis (vertically), which means that the display logic is optimized for long vertical programs but not long horizontal programs.
+This is mostly done by using a binary search when looking for marbles (and displays) in the current window. This search however is only performed along the X-axis (vertically), which means that the display logic is optimized for long vertical programs rather than long horizontal programs.
 
 The simulator also uses a binary search to find the position for each marble using the information computed by the analysis. It also avoids refreshing part of the screen that doesn't need to be refreshed.
 
 
 Further improvements
--------------------
+--------------------
 
-TODO
+### Faster simulation
+
+There are a couple of ways to improve the simulation speed.
+
+Using a faster language would be one them, but I wouldn't expect more than a ~5x speed up compare to the current pypy speed, as it's already able to compile callback execution at runtime.
+
+Another technique would be to gather the full boolean expressions for all marbles during a complete cycle, and then perform another layer of analysis to factorize them in a way that would reduce the amount of computation, using both short-circuits and intermediate results.
+
+Taking the example of the FlipJump computers, the analysis should theoretically be able to realize that:
+- Memory marbles don't change state unless a specific combination of input is present, and that those marbles share the same inputs.
+- Some marbles are the product of a large OR computation where each branch is mutually exclusive depending on a specific combination of inputs.
+
+On both cases, indexing and indirections might be used to essentially reduce the computation to its theoretical limit, i.e. what a standard FlipJump interpreter would do.
+
+
+### Other computers architectures
+
+It would be interesting to see other computer architectures implemented with the marbles model. In particular, [Subleq](https://esolangs.org/wiki/Subleq) might be a nice place to start.
