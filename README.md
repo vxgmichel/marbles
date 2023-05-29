@@ -431,6 +431,15 @@ $ pypy3 ./marbles.py hello_world.txt --quiet | buffer
 Hello, World!
 ```
 
+### Turing-completeness
+
+FlipJump is considered a [Bounded-storage machine](https://esolangs.org/wiki/Bounded-storage_machine):
+
+> A bounded-storage machine, abbreviated BSM, is in all respects similar to a Turing machine, save that there is an arbitrary bound on the size of its data storage unit (i.e. the length of its tape.)
+
+The fact that [flipjump-to-marbles.py](./flipjump-to-marbles.py) is able to generate arbitrarily large FlipJump computers should be enough to prove that this marble model is [Turing-complete](https://esolangs.org/wiki/Turing-complete).
+
+
 ### ASCII to-uppercase converter, using FlipJump
 
 As an example, let's implement the ascii `to-uppercase` program from earlier using FlipJump.
