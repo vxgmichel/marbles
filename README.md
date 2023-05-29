@@ -571,6 +571,6 @@ Taking the example of the FlipJump computers, the analysis should theoretically 
 On both cases, indexing and indirections might be used to essentially reduce the computation to its theoretical limit, i.e. what a standard FlipJump interpreter would do.
 
 
-### Other computers architectures
+### Other computer architectures
 
 It would be interesting to see other computer architectures implemented with the marbles model. In particular, [Subleq](https://esolangs.org/wiki/Subleq) might be a nice place to start.
