@@ -327,6 +327,11 @@ Three different counter programs are provided:
 
 It demonstrate the use of a single-digit 7-segment display design with a width of 31 characters that can be concatenated for larger displays.
 
+<p align="center">
+  <img src="./7-segment.gif" width="30%"/><br>
+  <em><sub>A single-digit 7-segment display</sub></em>
+</p>
+
 It includes:
 - The display itself, using the grid characters
 - The synchronization of all the segment marbles in order to avoid display artifacts
