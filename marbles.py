@@ -30,7 +30,6 @@ Check the simulation rules at: https://github.com/vxgmichel/marbles
 """
 
 from __future__ import annotations
-import array
 import gzip
 import bisect
 import contextlib
@@ -1590,6 +1589,8 @@ class GroupCallbacks:
     ) -> tuple[bool, int]:
         if time.time() > deadline:
             return True, start
+        if start == stop:
+            return False, start
         assert callbacks
         start_index = bisect.bisect(callbacks, (start, -1))
         stop_index = bisect.bisect(callbacks, (stop, -1))
@@ -1612,19 +1613,19 @@ class GroupCallbacks:
     def run_cycle(self, deadline: float) -> tuple[bool, int]:
         if time.time() > deadline:
             return True, 0
+
         cycle_callbacks = self.cycle_callbacks
         stop = len(self.cycle_callbacks) - 1
+        if deadline == math.inf:
+            for index in range(0, stop):
+                tick, _, callback = cycle_callbacks[index]
+                callback()
+            return False, self.cycle_length
+
         previous_tick = None
-        check = deadline != math.inf
-        random.Random(0)
         for index in range(0, stop):
             tick, _, callback = cycle_callbacks[index]
-            if (
-                check
-                and tick != previous_tick
-                and index % 1000 == 0
-                and time.time() > deadline
-            ):
+            if tick != previous_tick and index % 1000 == 0 and time.time() > deadline:
                 return True, tick
             callback()
             previous_tick = tick
@@ -1650,8 +1651,8 @@ class Simulation:
         self.cycle_length = simulation_info.cycle_length
 
         # Initialize values
-        self.values = array.array("B", simulation_info.initial_marble_values)
-        self.display_values = array.array("B", simulation_info.initial_display_values)
+        self.values = bytearray(simulation_info.initial_marble_values)
+        self.display_values = bytearray(simulation_info.initial_display_values)
 
         # Create callbacks
         self.callbacks = [
