@@ -73,6 +73,12 @@ try:
 except ImportError:
     msgpack = None
 
+try:
+    import pyximport
+    pyximport.install()
+except ImportError:
+    pyximport = None
+
 # Compatibility
 
 try:
@@ -430,12 +436,8 @@ class Action:
 
     def make_callback(
         self,
-        values: MutableSequence[int],
-        display_values: MutableSequence[int],
-        read_bit: Callable[[], int],
-        write_bit: Callable[[int], None],
         cache: dict = {},
-    ) -> Callable:
+    ) -> list[str]:
         if not cache:
             cache.update(
                 {
@@ -448,171 +450,107 @@ class Action:
                     ActionType.AND: type(self).make_and_callback,
                 }
             )
-        return cache[self.action_type](
-            self, values, display_values, read_bit, write_bit
-        )
+        return cache[self.action_type](self)
+
+    @staticmethod
+    def make_callback_from_lines(
+        lines: list[str],
+        values: MutableSequence[int],
+        display_values: MutableSequence[int],
+        read_bit: Callable[[], int],
+        write_bit: Callable[[int], None],
+        compile: bool = False,
+    ) -> Callable | None:
+        if not compile:
+            code = "def callback():\n    " + "\n    ".join(lines) + "\n"
+            scope = locals()
+            exec(code, scope)
+            return scope["callback"]
+        if pyximport is None:
+            return None
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".pyx", delete=False, dir=".") as fp:
+            fp.write("# cython: language_level=3\n\n")
+            fp.write("def callback(char * values, char * display_values, read_bit, write_bit):\n    ")
+            for line in lines:
+                fp.write("\n    " + line)
+            fp.write("\n")
+
+        # import subprocess
+        # subprocess.run(f"cython -a {fp.name}", shell=True, check=True)
+        module = pyximport.load_module("test", fp.name)
+
+        def callback():
+            return module.callback(values, display_values, read_bit, write_bit)
+
+        return callback
+
 
     def make_start_callback(
         self,
-        values: MutableSequence[int],
-        display_values: MutableSequence[int],
-        read_bit: Callable[[], int],
-        write_bit: Callable[[int], None],
-    ) -> Callable:
+    ) -> list[str]:
         circuit_id = self.circuit_id
-
-        if self.inverted:
-
-            def callback():
-                values[circuit_id] ^= 1
-
-        else:
-
-            def callback():
-                pass
-
-        return callback
+        return [f"values[{circuit_id}] ^= 1"] if self.inverted else ["pass"]
 
     def make_clear_callback(
         self,
-        values: MutableSequence[int],
-        display_values: MutableSequence[int],
-        read_bit: Callable[[], int],
-        write_bit: Callable[[int], None],
-    ) -> Callable | None:
+    ) -> list[str]:
         circuit_id = self.circuit_id
-
-        def callback():
-            values[circuit_id] = 0
-
-        return callback
+        return [f"values[{circuit_id}] = 0"]
 
     def make_exit_callback(
         self,
-        values: MutableSequence[int],
-        display_values: MutableSequence[int],
-        read_bit: Callable[[], int],
-        write_bit: Callable[[int], None],
-    ) -> Callable | None:
+    ) -> list[str]:
         circuit_id = self.circuit_id
+        return [f"if values[{circuit_id}]: exit()"]
 
-        def callback():
-            if values[circuit_id]:
-                exit()
-
-        return callback
 
     def make_display_callback(
         self,
-        values: MutableSequence[int],
-        display_values: MutableSequence[int],
-        read_bit: Callable[[], int],
-        write_bit: Callable[[int], None],
-    ) -> Callable | None:
+    ) -> list[str]:
         circuit_id = self.circuit_id
         display_id = self.extra
-
+        result = []
         if self.inverted:
-
-            def callback():
-                values[circuit_id] ^= 1
-                display_values[display_id] = values[circuit_id]
-
-        else:
-
-            def callback():
-                display_values[display_id] = values[circuit_id]
-
-        return callback
+            result.append(f"values[{circuit_id}] ^= 1")
+        result.append(f"display_values[{display_id}] = values[{circuit_id}]")
+        return result
 
     def make_read_callback(
         self,
-        values: MutableSequence[int],
-        display_values: MutableSequence[int],
-        read_bit: Callable[[], int],
-        write_bit: Callable[[int], None],
-    ) -> Callable | None:
+    ) -> list[str]:
         circuit_id = self.circuit_id
-
+        result = []
         if self.inverted:
+            result.append(f"values[{circuit_id}] ^= 1")
+        result.append(f"if values[{circuit_id}]: values[{circuit_id}] = read_bit()")
+        return result
 
-            def callback():
-                values[circuit_id] ^= 1
-                if values[circuit_id]:
-                    values[circuit_id] = read_bit()
-
-        else:
-
-            def callback():
-                if values[circuit_id]:
-                    values[circuit_id] = read_bit()
-
-        return callback
 
     def make_write_callback(
         self,
-        values: MutableSequence[int],
-        display_values: MutableSequence[int],
-        read_bit: Callable[[], int],
-        write_bit: Callable[[int], None],
-    ) -> Callable | None:
+    ) -> list[str]:
         circuit_id = self.circuit_id
         value = self.extra
-
+        result = []
         if self.inverted:
-
-            def callback():
-                values[circuit_id] ^= 1
-                if values[circuit_id]:
-                    write_bit(value)
-
-        else:
-
-            def callback():
-                if values[circuit_id]:
-                    write_bit(value)
-
-        return callback
+            result.append(f"values[{circuit_id}] ^= 1")
+        result.append(f"if values[{circuit_id}]: write_bit({value})")
+        return result
 
     def make_and_callback(
         self,
-        values: MutableSequence[int],
-        display_values: MutableSequence[int],
-        read_bit: Callable[[], int],
-        write_bit: Callable[[int], None],
-    ) -> Callable | None:
+    ) -> list[str]:
         circuit_id = self.circuit_id
         control_circuit_id = self.extra
         control_circuit_inverted = self.extra2
-
-        if self.inverted and control_circuit_inverted:
-
-            def callback():
-                values[circuit_id] ^= 1
-                values[control_circuit_id] ^= 1
-                values[circuit_id] &= values[control_circuit_id]
-
-        elif self.inverted and not control_circuit_inverted:
-
-            def callback():
-                values[circuit_id] ^= 1
-                values[circuit_id] &= values[control_circuit_id]
-
-        elif not self.inverted and control_circuit_inverted:
-
-            def callback():
-                values[control_circuit_id] ^= 1
-                values[circuit_id] &= values[control_circuit_id]
-
-        elif not self.inverted and not control_circuit_inverted:
-
-            def callback():
-                values[circuit_id] &= values[control_circuit_id]
-
-        else:
-            assert False
-
-        return callback
+        result = []
+        if self.inverted:
+            result.append(f"values[{circuit_id}] ^= 1")
+        if control_circuit_inverted:
+            result.append(f"values[{control_circuit_id}] ^= 1")
+        result.append(f"values[{circuit_id}] &= values[{control_circuit_id}]")
+        return result
 
 
 # Characters
@@ -1501,10 +1439,12 @@ class GroupCallbacks:
         self.group_info = group_info
         self.init_callbacks: list[tuple[int, int, Callable[[], None]]] = []
         self.cycle_callbacks: list[tuple[int, int, Callable[[], None]]] = []
+        self.cycle_callback: Callable[[], None] | None = None
 
-    def compile(self, simulation: Simulation):
+    def generate_callbacks(self, simulation: Simulation):
         self.init_callbacks = []
         self.cycle_callbacks = []
+        cycle_lines = []
 
         # Make callbacks
         for i, (tick, action) in enumerate(
@@ -1514,7 +1454,9 @@ class GroupCallbacks:
                 unit=" callbacks",
             )
         ):
-            callback = action.make_callback(
+            lines = action.make_callback()
+            callback = Action.make_callback_from_lines(
+                lines,
                 simulation.values,
                 simulation.display_values,
                 simulation.io.read_bit,
@@ -1526,11 +1468,21 @@ class GroupCallbacks:
             else:
                 item = tick - self.cycle_start, i, callback
                 self.cycle_callbacks.append(item)
+                cycle_lines.extend(lines)
 
         # Add extra init and cycle callbacks
         (tick, i, callback) = self.cycle_callbacks[0]
         self.init_callbacks.append((tick + self.cycle_start, i, callback))
         self.cycle_callbacks.append((tick + self.cycle_length, i, callback))
+
+        self.cycle_callback = Action.make_callback_from_lines(
+            cycle_lines,
+            simulation.values,
+            simulation.display_values,
+            simulation.io.read_bit,
+            simulation.io.write_bit,
+            compile=True,
+        )
 
     def run_until(self, start: int, stop: int, deadline: float) -> tuple[bool, int]:
         assert start < stop
@@ -1612,11 +1564,13 @@ class GroupCallbacks:
     def run_cycle(self, deadline: float) -> tuple[bool, int]:
         if time.time() > deadline:
             return True, 0
+        if self.cycle_callback is not None:
+            self.cycle_callback()
+            return False, self.cycle_length
         cycle_callbacks = self.cycle_callbacks
         stop = len(self.cycle_callbacks) - 1
         previous_tick = None
         check = deadline != math.inf
-        random.Random(0)
         for index in range(0, stop):
             tick, _, callback = cycle_callbacks[index]
             if (
@@ -1650,17 +1604,17 @@ class Simulation:
         self.cycle_length = simulation_info.cycle_length
 
         # Initialize values
-        self.values = array.array("B", simulation_info.initial_marble_values)
-        self.display_values = array.array("B", simulation_info.initial_display_values)
+        self.values = bytearray(simulation_info.initial_marble_values)
+        self.display_values = bytearray(simulation_info.initial_display_values)
 
         # Create callbacks
         self.callbacks = [
             GroupCallbacks(i, group_info) for i, group_info in enumerate(group_infos)
         ]
 
-    def compile(self):
+    def generate_callbacks(self):
         for callback in self.callbacks:
-            callback.compile(self)
+            callback.generate_callbacks(self)
 
     def run(self):
         with progress_context(
@@ -2234,7 +2188,7 @@ def main(
     # Prepare simulation
     input_output = SimulationIO(input_stream, output_stream)
     simulation = Simulation(simulation_info, group_info, input_output)
-    simulation.compile()
+    simulation.generate_callbacks()
 
     # Run simulation
     try:
