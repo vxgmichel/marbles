@@ -446,7 +446,11 @@ FlipJump is considered a [Bounded-storage machine](https://esolangs.org/wiki/Bou
 
 > A bounded-storage machine, abbreviated BSM, is in all respects similar to a Turing machine, save that there is an arbitrary bound on the size of its data storage unit (i.e. the length of its tape.)
 
-The fact that [flipjump-to-marbles.py](./flipjump-to-marbles.py) is able to generate arbitrarily large FlipJump computers should be enough to prove that this marble model is [Turing-complete](https://esolangs.org/wiki/Turing-complete).
+The fact that [flipjump-to-marbles.py](./flipjump-to-marbles.py) is able to generate arbitrarily large FlipJump computers should be enough to prove that this marble model is itself a bounded-storage machine.
+
+It is however **not** [Turing-complete](https://esolangs.org/wiki/Turing-complete), since marble programs do not have access to an arbitrarily large memory at runtime. For instance, it's not possible to write a marble program that would reverse an arbitrarily large null-terminated string coming from the input stream.
+
+Turing-completeness could possibly be achieved by adding stacks to the language as discussed in the [further improvements](#implementing-stacks) section.
 
 
 ### ASCII to-uppercase converter, using FlipJump
@@ -574,3 +578,23 @@ On both cases, indexing and indirections might be used to essentially reduce the
 ### Other computer architectures
 
 It would be interesting to see other computer architectures implemented with the marbles model. In particular, [Subleq](https://esolangs.org/wiki/Subleq) might be a nice place to start.
+
+
+### Implementing stacks
+
+As [explained here](#turing-completeness), it should be possible to make the marble model Turing-complete by adding infinite bit stacks to its definition.
+
+Here's a possible implementation based on a new stack character `▷`/`▶`:
+
+```
+POP     ═○════╗
+PUSH    ═○══╗ ║
+DATA_IN ═○══╬╤╬════ ...
+            ╟▷╜
+            ║ ╚════ DATA_OUT
+            ╚══════ ...
+```
+- `DATA_IN` prepares the value to push on the stack (the stack character is either `▷` or `▶` depending on the last prepared value)
+- `PUSH` decides whether the prepared value should be pushed on the stack
+- `POP` decides whether a value should be popped from the stack
+- `DATA_OUT` is the value popped from the stack, or `○` if `POP` was low.
