@@ -1,7 +1,7 @@
 Marbles
 =======
 
-Marbles is a computational model and an esoteric programming language based on marble circuitry.
+Marbles is an [esoteric programming language](https://esolangs.org/wiki/Marbles) based on marble circuitry.
 
 <p align="center">
   <img src="./demo.gif" width="50%"/><br>
@@ -51,7 +51,7 @@ And a marble riding the upper track is represented using the character `●`:
   ╚═══╝
 ```
 
-There can be at most one marble riding a given track.
+There can be at most one marble riding a given circuit.
 
 Two circuits can cross using the character `╬`:
 ```
@@ -84,7 +84,7 @@ At every simulation tick, all the marbles move in their current direction:
 
 ### Logic
 
-The upper and lower track can be swapped using the characters `┃` and `━`:
+The upper and lower tracks can be swapped using the characters `┃` and `━`:
 ```
 ○═━═╗     ╔○━═╗     ╔═●═╗     ╔═━●╗     ╔═━═●     ╔═━═╗     ╔═━═╗
 ┃   ┃  →  ┃   ┃  →  ┃   ┃  →  ┃   ┃  →  ┃   ┃  →  ┃   ○  →  ┃   ┃ →  ...
