@@ -2,7 +2,7 @@
 // Other ascii characters are left untouched.
 // Data is read from stdin and written to stdout.
 
-  startup
+  stl.startup
 main:
   bit.input current_char
   bit.cmp 8, current_char, a_char, skip, continue1, continue1
