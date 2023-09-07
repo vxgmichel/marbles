@@ -350,7 +350,7 @@ Another version of the same program is provided as [to-uppercase-with-flipjump.t
 
 This version is compressed in order to keep the file size small, as the original text file is about 140 MB.
 
-The way this file is generated is explained in the next section where flip jump computers are presented, starting with [tiny-flip-jump.txt](./tiny-flip-jump.txt).
+The way this file is generated is explained in the next section where flip jump computers are presented, starting with [tiny-flipjump.txt](./tiny-flipjump.txt).
 
 FlipJump computers
 ------------------
@@ -483,7 +483,7 @@ Then assemble it using version 1 and the lowest width possible
 $ python ../flip-jump/src/fj.py --asm to-uppercase.fj -o to-uppercase.fjm -w 16 -v 1
 ```
 
-Convert it to a marble program. The file is likely to be quite bit (about 140 MB in this case), so compress it with gzip:
+Convert it to a marble program. The file is likely to be quite big (about 140 MB in this case), so compress it with gzip:
 ```shell
 $ ./flipjump-to-marbles.py to-uppercase.fjm | gzip --best > to-uppercase-with-flipjump.txt.gz
 ```
@@ -517,7 +517,7 @@ Implementation and performance
 
 ### General idea
 
-A naive implementation of the simulator would list all the marbles, initialize them with the proper directions and loop over simulation ticks. At each tick, the new state for a marble is computed from the information on its cell and its neighbors, similar to an cellular automaton.
+A naive implementation of the simulator would list all the marbles, initialize them with the proper directions and loop over simulation ticks. At each tick, the new state for a marble is computed from the information on its cell and its neighbors, similar to a cellular automaton.
 
 This would be really slow. Instead, the current implementation focus on interactions. It first performs an analysis of the program, separating the positional information (i.e where the marbles are specifically on the grid) from the state information (i.e whether the marble is in upper or lower state).
 
@@ -572,7 +572,7 @@ Taking the example of the FlipJump computers, the analysis should theoretically 
 - Memory marbles don't change state unless a specific combination of input is present, and that those marbles share the same inputs.
 - Some marbles are the product of a large OR computation where each branch is mutually exclusive depending on a specific combination of inputs.
 
-On both cases, indexing and indirections might be used to essentially reduce the computation to its theoretical limit, i.e. what a standard FlipJump interpreter would do.
+In both cases, indexing and indirections might be used to essentially reduce the computation to its theoretical limit, i.e. what a standard FlipJump interpreter would do.
 
 
 ### Other computer architectures

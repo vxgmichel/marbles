@@ -1,7 +1,7 @@
 A tiny 4-bit FlipJump computer with 4 words
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• This flip-jump computer is programmed with 2 instructions, 9;8 and 8;0
+• This FlipJump computer is programmed with 2 instructions, 9;8 and 8;0
 • It outputs 1 then 0 for each 0 in stdin and stops at the first 1
 • For instance, giving `\x00\x10` as input produces `\x55\x55\x55`
 • One instruction is executed at every cycle (404 ticks)
