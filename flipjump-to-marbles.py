@@ -2,10 +2,10 @@
 """
 usage: flipjump-to-marbles.py [-h] [--width WIDTH] [--size SIZE] [program]
 
-Convert flip jump machine code (in version 1) to a marble program
+Convert flip jump machine code to a marble program
 
 positional arguments:
-  program        path to a .fjm file in version 1
+  program        path to a .fjm file
 
 options:
   -h, --help     show this help message and exit
@@ -14,10 +14,14 @@ options:
 """
 from __future__ import annotations
 
-import io
-import array
-import struct
 import argparse
+from typing import cast
+from pathlib import Path
+
+try:
+    from flipjump.fjm.fjm_reader import Reader as FjmReader
+except ImportError:
+    FjmReader = None
 
 EMPTY = "   "
 VERTICAL = "║  "
@@ -102,42 +106,24 @@ CMP_FOOTER_1 = "╚═╧╝  "
 CMP_CHECK_LOOP = "╜  "
 CMP_WIDTH = 4
 
+FLIPJUMP_NOT_INSTALLED_MESSAGE = """\
+The `flipjump` library is not installed.
+Please use:
+  $ pip install flipjump\
+"""
 
-def main(
-    width: int | None = 8, size: int | None = None, program: io.IOBase | None = None
-):
 
+def main(width: int | None = 8, size: int | None = None, program: Path | None = None):
     words = None
     if program is None and width is None:
         width = 8
     if program is not None:
-        header = program.read(0x40)
-        program_string = program.read()
-        (
-            magic,
-            word_size,
-            version,
-            segment_num,
-            flags,
-            reserved,
-            segment_start,
-            segment_length,
-            data_start,
-            data_length,
-        ) = struct.unpack("<HHQQQIQQQQ", header)
-        assert magic == 0x4A46
-        assert version == 1
-        assert segment_num == 1
-        assert segment_start == 0
-        assert data_start == 0
-        assert data_length == segment_length
-        assert width in (None, word_size)
-        width = word_size
-        assert size in (None, data_length)
-        size = data_length
-
-        words = array.array("_BHLQ"[word_size // 8], program_string)
-        assert len(words) == size
+        if FjmReader is None:
+            raise RuntimeError(FLIPJUMP_NOT_INSTALLED_MESSAGE)
+        reader = FjmReader(program)
+        width = reader.memory_width
+        size = cast(int, max(reader.memory)) + 1
+        words = [reader.memory[i] for i in range(size)]
 
     # Make sure width is a power of 2
     assert width is not None
@@ -287,7 +273,6 @@ def main(
 
     # Iterate over comparator blocks
     for i in range(j_size):
-
         # Comparator block, row 0
         row = (
             SOUTH_EAST_CORNER_WITHOUT_MARBLE
@@ -735,7 +720,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Convert flip jump machine code (in version 1) to a marble program"
+        description="Convert flip jump machine code to a marble program"
     )
     parser.add_argument(
         "--width",
@@ -751,10 +736,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "program",
-        type=argparse.FileType(mode="rb"),
+        type=Path,
         default=None,
         nargs="?",
-        help="path to a .fjm file in version 1",
+        help="path to a .fjm file",
     )
     namespace = parser.parse_args()
     main(namespace.width, namespace.size, namespace.program)

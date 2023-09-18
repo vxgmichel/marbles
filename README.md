@@ -425,12 +425,20 @@ $ ./flipjump-to-marbles.py hello_world.fjm
 [...]
 ```
 
-Note however that the FlipJump program must be assembled in version 1.
-
 See below the complete toolchain from a FlipJump assembly file to executing the program:
 ```shell
-# Assemble a hello world program from the flip-jump repository (width 16, version 1)
-$ python ../flip-jump/src/fj.py --asm ../flip-jump/programs/print_tests/hello_world.fj -o hello_world.fjm -w 16 -v 1
+# Install flipjump package
+$ pip install flipjump
+
+# Write a hello world program
+$ echo '''
+stl.startup
+stl.output "Hello, World!"
+stl.loop
+''' > hello_world.fj
+
+# Assemble a hello world program from the flip-jump repository (width 16)
+$ fj --asm hello_world.fj -o hello_world.fjm -w 16
 
 # Convert it to a marble program
 $ ./flipjump-to-marbles.py hello_world.fjm > hello_world.txt
@@ -478,9 +486,9 @@ a_char: bit.vec 8, 0x61
 z_char: bit.vec 8, 0x7a
 ```
 
-Then assemble it using version 1 and the lowest width possible
+Then assemble it with the lowest width possible
 ```shell
-$ python ../flip-jump/src/fj.py --asm to-uppercase.fj -o to-uppercase.fjm -w 16 -v 1
+$ fj --asm to-uppercase.fj -o to-uppercase.fjm -w 16
 ```
 
 Convert it to a marble program. The file is likely to be quite big (about 140 MB in this case), so compress it with gzip:
